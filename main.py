@@ -8,7 +8,12 @@ The Primary Agent (PM) orchestrates specialized agents:
 - PR Agent: shepherds PRs through review
 
 Communication is contract-based via TaskBundles with
-transport-agnostic status reporting.
+transport-agnostic status reporting. Agents run as separate
+processes; the graph interrupts and resumes on callbacks.
+
+Usage:
+    uv run python main.py          # Verify graph compiles
+    uv run python demo.py          # Run end-to-end demo
 """
 
 import logging
@@ -20,9 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
     graph = build_orchestrator_graph()
-    compiled = graph.compile()
-    logger.info("Orchestrator graph compiled: %s", list(compiled.get_graph().nodes))
+    compiled = graph.compile(checkpointer=MemorySaver())
+    nodes = list(compiled.get_graph().nodes)
+    logger.info("Orchestrator graph compiled with %d nodes: %s", len(nodes), nodes)
 
 
 if __name__ == "__main__":
