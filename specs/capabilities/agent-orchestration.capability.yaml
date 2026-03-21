@@ -42,3 +42,14 @@ scope:
     - specs/models/shared/task-result.model.yaml
     - specs/models/shared/capability-profile.model.yaml
     - specs/models/shared/invocation-config.model.yaml
+
+  features:
+    - specs/features/orchestration/stakeholder-requests-feature.feature
+    - specs/features/orchestration/pa-plans-and-dispatches.feature
+    - specs/features/orchestration/pa-evaluates-and-routes.feature
+    - specs/features/orchestration/stakeholder-approves-deploy.feature
+    - specs/features/agent-lifecycle/agent-receives-bundle.feature
+    - specs/features/agent-lifecycle/agent-reports-progress.feature
+    - specs/features/agent-lifecycle/agent-handles-failure.feature
+    - specs/features/monitoring/pa-detects-timeout.feature
+    - specs/features/monitoring/pa-escalates-to-stakeholder.feature
