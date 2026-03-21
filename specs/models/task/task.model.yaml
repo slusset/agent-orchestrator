@@ -1,0 +1,146 @@
+id: task
+type: model
+entity: Task
+aggregate: Task
+description: |
+  A unit of work dispatched to a single specialized agent. Created by the PA
+  when a story needs work done. Carries a TaskBundle with everything the agent
+  needs and tracks lifecycle through heartbeats and result reporting.
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/stories/orchestration/pa-evaluates-and-routes.md
+    - specs/stories/agent-lifecycle/agent-receives-bundle.md
+    - specs/stories/agent-lifecycle/agent-reports-progress.md
+    - specs/stories/agent-lifecycle/agent-handles-failure.md
+    - specs/stories/monitoring/pa-detects-timeout.md
+  journeys:
+    - specs/journeys/feature-request-lifecycle.md
+    - specs/journeys/agent-execution-lifecycle.md
+
+identity:
+  field: id
+  type: string
+  format: hex-uuid-prefix
+  example: "abc123def456"
+
+attributes:
+  storyId:
+    type: string
+    required: true
+    description: "Parent story this task belongs to"
+
+  agentType:
+    type: enum
+    required: true
+    values: [coding, uat, devops, pr]
+    description: "Which type of agent handles this task"
+
+  bundle:
+    type: object
+    required: true
+    description: "The TaskBundle (or subtype) carrying the hand-off contract"
+    see: specs/models/shared/task-bundle.model.yaml
+
+  status:
+    type: enum
+    required: true
+    values: [pending, dispatched, in_progress, blocked, completed, failed, cancelled]
+    description: "Current lifecycle state"
+    see: task.lifecycle.yaml
+
+  callbackUrl:
+    type: string
+    required: true
+    format: uri
+    description: "PA's webhook endpoint for this task's status reports"
+
+  statusInterval:
+    type: integer
+    required: true
+    default: 300
+    description: "Expected seconds between heartbeats"
+
+  timeoutMinutes:
+    type: integer
+    required: true
+    default: 60
+    description: "Max time before PA escalates"
+
+  lastHeartbeat:
+    type: datetime
+    required: false
+    description: "Timestamp of most recent heartbeat from agent"
+
+  result:
+    type: object
+    required: false
+    description: "TaskResult payload from agent on completion/failure"
+    see: specs/models/shared/task-result.model.yaml
+
+  prUrl:
+    type: string
+    required: false
+    format: uri
+    description: "PR URL if this task produced a pull request"
+
+  retryCount:
+    type: integer
+    required: true
+    default: 0
+    description: "Number of times this task has been retried"
+
+  maxRetries:
+    type: integer
+    required: true
+    default: 2
+    description: "Maximum retry attempts before escalation"
+
+  dispatchedAt:
+    type: datetime
+    required: false
+
+  completedAt:
+    type: datetime
+    required: false
+
+relationships:
+  story:
+    type: belongs-to-ref
+    entity: Story
+    required: true
+    description: "The story this task fulfills"
+
+  parentTask:
+    type: belongs-to-ref
+    entity: Task
+    required: false
+    description: "If this is a retry or follow-up, reference to the original task"
+
+rules:
+  - id: task-requires-bundle
+    description: "Every task must carry a valid TaskBundle"
+    enforced: validation
+
+  - id: task-requires-callback
+    description: "Every task must have a reachable callback_url"
+    enforced: validation
+
+  - id: heartbeat-within-interval
+    description: "Agent must send heartbeat within status_interval * 2 (soft threshold)"
+    enforced: domain
+    see: specs/stories/monitoring/pa-detects-timeout.md
+
+  - id: timeout-triggers-escalation
+    description: "If no heartbeat received within timeout_minutes, PA escalates"
+    enforced: domain
+    see: specs/stories/monitoring/pa-detects-timeout.md
+
+  - id: result-immutable-after-completion
+    description: "TaskResult cannot be modified after task reaches terminal state"
+    enforced: domain
+
+  - id: retry-within-max
+    description: "Task can only be retried up to maxRetries times"
+    enforced: domain

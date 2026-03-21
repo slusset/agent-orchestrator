@@ -1,0 +1,128 @@
+id: task-bundle
+type: model
+value_object: TaskBundle
+description: |
+  The hand-off contract between the PA and any agent. Carries everything
+  an agent needs to work independently. Transport-agnostic — defines WHAT
+  gets communicated, not HOW.
+
+  Subtypes add agent-specific fields:
+  - CodingBundle: repo, branch, testing, PR config, scope boundaries
+  - UATBundle: profiles, test scripts, journeys, environment
+  - DevOpsBundle: target environment, providers, secrets, actions
+  - PRBundle: PR number, review criteria, merge strategy
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/stories/agent-lifecycle/agent-receives-bundle.md
+
+fields:
+  taskId:
+    type: string
+    required: true
+    description: "Unique identifier for this task"
+
+  parentTaskId:
+    type: string
+    required: false
+    description: "For sub-tasks or retries"
+
+  storyId:
+    type: string
+    required: false
+    description: "JIRA/external tracker reference"
+
+  objective:
+    type: string
+    required: true
+    description: "Clear, actionable description of what to do"
+
+  context:
+    type: string
+    required: false
+    description: "Background info, specs, relevant history"
+
+  acceptanceCriteria:
+    type: list
+    items: string
+    description: "Testable criteria for 'done'"
+
+  skills:
+    type: list
+    items: string
+    description: "Skills the agent should use (suggestions, not commands)"
+
+  callbackUrl:
+    type: string
+    required: true
+    format: uri
+    description: "PA's webhook endpoint for status reports"
+
+  statusInterval:
+    type: integer
+    default: 300
+    description: "Expected seconds between heartbeats"
+
+  priority:
+    type: enum
+    values: [critical, high, medium, low]
+    default: medium
+
+  timeoutMinutes:
+    type: integer
+    default: 60
+    description: "Max time before PA escalates"
+
+subtypes:
+  CodingBundle:
+    adds:
+      - repoUrl (string, required)
+      - baseBranch (string, default "main")
+      - branchPrefix (string, default "feature/")
+      - protectedPaths (list of strings)
+      - focusPaths (list of strings)
+      - runUnitTests (boolean, default true)
+      - runIntegrationTests (boolean, default false)
+      - minCoveragePct (integer, optional)
+      - testFrameworks (list of strings)
+      - prTitlePrefix (string)
+      - draftPr (boolean, default true)
+
+  UATBundle:
+    adds:
+      - repoUrl (string, required)
+      - branch (string, required)
+      - profile (enum: scripted, exploratory, regression, accessibility)
+      - userStories (list of strings)
+      - journeySpecs (list of strings)
+      - testScripts (list of strings)
+      - testEnvironmentUrl (string, optional)
+      - failFast (boolean, default false)
+
+  DevOpsBundle:
+    adds:
+      - repoUrl (string, required)
+      - branch (string, default "main")
+      - action (enum: deploy, rollback, promote, troubleshoot)
+      - targetEnvironment (enum: dev, uat, staging, production)
+      - providers (list of enum: vercel, railway, supabase)
+      - envVars (map of string to string)
+      - secretRefs (list of strings — references, not values)
+      - runMigrations (boolean, default false)
+      - healthCheckUrl (string, optional)
+      - rollbackOnFailure (boolean, default true)
+      - requiresApproval (boolean, default false)
+
+  PRBundle:
+    adds:
+      - repoUrl (string, required)
+      - prNumber (integer, required)
+      - prUrl (string, required)
+      - action (enum: review, approve, request_changes, merge)
+      - checkTestsPass (boolean, default true)
+      - reviewGuidelines (list of strings)
+      - mergeMethod (enum: merge, squash, rebase)
+      - deleteBranchAfterMerge (boolean, default true)
+
+equality: "Two TaskBundles are equal if they have the same taskId"

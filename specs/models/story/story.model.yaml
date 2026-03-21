@@ -1,0 +1,119 @@
+id: story
+type: model
+entity: Story
+aggregate: Story
+description: |
+  A stakeholder feature request tracked from intake through production.
+  The PA creates a Story when a stakeholder makes a request, plans the work,
+  dispatches tasks to agents, and progresses the story through its lifecycle.
+
+sources:
+  stories:
+    - specs/stories/orchestration/stakeholder-requests-feature.md
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/stories/orchestration/pa-evaluates-and-routes.md
+    - specs/stories/orchestration/stakeholder-approves-deploy.md
+  journeys:
+    - specs/journeys/feature-request-lifecycle.md
+
+identity:
+  field: id
+  type: string
+  format: prefixed-ulid
+  prefix: "story_"
+  example: "story_01HQ3K4N5M6P7R8S9T0UVWXYZ"
+
+attributes:
+  objective:
+    type: string
+    required: true
+    constraints:
+      minLength: 10
+      maxLength: 500
+    description: "Natural language description of what the stakeholder wants"
+    example: "Add user authentication with email/password"
+
+  context:
+    type: string
+    required: false
+    description: "Background info, specs, relevant history pulled from JIRA/Confluence"
+
+  acceptanceCriteria:
+    type: list
+    items: string
+    required: true
+    constraints:
+      minItems: 1
+    description: "Testable criteria that define 'done' — plain language"
+
+  status:
+    type: enum
+    required: true
+    values: [intake, planning, in_progress, review, uat, staging, awaiting_approval, deploying, completed, failed, cancelled]
+    description: "Current phase in the story lifecycle"
+    see: story.lifecycle.yaml
+
+  priority:
+    type: enum
+    required: true
+    values: [critical, high, medium, low]
+    description: "Urgency — affects timeout thresholds and escalation speed"
+
+  externalRef:
+    type: string
+    required: false
+    description: "JIRA ticket ID or external tracker reference"
+    example: "PROJ-42"
+
+  repoUrl:
+    type: string
+    required: true
+    format: uri
+    description: "Repository this story targets"
+
+  focusPaths:
+    type: list
+    items: string
+    description: "Directories the coding agent should work within"
+
+  protectedPaths:
+    type: list
+    items: string
+    description: "Directories the coding agent must NOT touch"
+
+  createdAt:
+    type: datetime
+    required: true
+    immutable: true
+
+  completedAt:
+    type: datetime
+    required: false
+
+relationships:
+  tasks:
+    type: has-many-refs
+    entity: Task
+    description: "All tasks spawned for this story (by reference, not embedded)"
+
+  stakeholder:
+    type: string
+    description: "Identifier of the stakeholder who requested this story"
+
+rules:
+  - id: story-must-have-criteria
+    description: "A story must have at least one acceptance criterion"
+    enforced: validation
+
+  - id: story-advance-requires-task-completion
+    description: "Story cannot advance to next phase until current phase tasks complete successfully"
+    enforced: domain
+
+  - id: prod-deploy-requires-stakeholder-approval
+    description: "Production deployment requires explicit stakeholder approval"
+    enforced: domain
+    see: story.lifecycle.yaml
+
+  - id: story-close-requires-all-tasks-done
+    description: "Story cannot be marked completed until all tasks are completed or cancelled"
+    enforced: domain

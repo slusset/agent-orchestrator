@@ -1,0 +1,25 @@
+aggregate: Deployment
+root: Deployment
+description: |
+  The Deployment aggregate represents a release to a target environment.
+  Created by the DevOps Agent when it deploys. Tracks which providers
+  were involved, health check results, and rollback state.
+
+entities:
+  - Deployment (root)
+
+value_objects:
+  - DeploymentId
+  - DeployEnvironment
+  - InfraProvider
+  - HealthCheckResult
+
+invariants:
+  - A deployment must reference a task and story
+  - A deployment to production must have requires_approval=true
+  - A deployment cannot be rolled back if a newer deployment exists to the same environment
+  - Health check must pass before deployment is marked successful
+
+boundaries:
+  - Task and Story are referenced by ID
+  - Provider-specific details stored in metadata

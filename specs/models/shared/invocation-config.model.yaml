@@ -1,0 +1,55 @@
+id: invocation-config
+type: model
+value_object: InvocationConfig
+description: |
+  How to reach and launch an agent. The PA uses this to dispatch
+  TaskBundles. Transport-specific — different modes for different
+  deployment scenarios.
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/stories/agent-lifecycle/agent-receives-bundle.md
+
+fields:
+  mode:
+    type: enum
+    required: true
+    values: [http, subprocess, queue]
+    description: |
+      How the PA launches this agent:
+      - http: POST TaskBundle to agent's endpoint (A2A)
+      - subprocess: Spawn agent as a child process
+      - queue: Push TaskBundle to a message queue
+
+  endpoint:
+    type: string
+    required: false
+    description: "Agent's HTTP endpoint (required when mode=http)"
+    example: "http://coding-agent:8001/execute"
+
+  command:
+    type: string
+    required: false
+    description: "Command to spawn agent (required when mode=subprocess)"
+    example: "uv run python -m agents.coding"
+
+  queueName:
+    type: string
+    required: false
+    description: "Queue name to push to (required when mode=queue)"
+    example: "agent-tasks-coding"
+
+  healthCheckPath:
+    type: string
+    required: false
+    description: "Path to check if agent is alive (for http mode)"
+    default: "/health"
+
+  timeout:
+    type: integer
+    required: false
+    default: 30
+    description: "Seconds to wait for dispatch acknowledgment"
+
+equality: "Value equality on all fields"

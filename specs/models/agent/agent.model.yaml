@@ -1,0 +1,97 @@
+id: agent
+type: model
+entity: Agent
+aggregate: Agent
+description: |
+  A registered specialized worker that the PA can dispatch tasks to.
+  The PA consults the agent's capability profile during planning to
+  determine what instructions to include in the TaskBundle and whether
+  the agent can handle the requested work.
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/stories/agent-lifecycle/agent-receives-bundle.md
+  journeys:
+    - specs/journeys/agent-execution-lifecycle.md
+
+identity:
+  field: id
+  type: string
+  format: slug
+  example: "coding-agent-01"
+
+attributes:
+  name:
+    type: string
+    required: true
+    description: "Human-readable name"
+    example: "Primary Coding Agent"
+
+  agentType:
+    type: enum
+    required: true
+    values: [coding, uat, devops, pr]
+    description: "What kind of work this agent handles"
+
+  status:
+    type: enum
+    required: true
+    values: [available, busy, offline, degraded]
+    description: "Current availability"
+
+  capability:
+    type: object
+    required: true
+    description: "What the agent can do — the PA consults this during planning"
+    see: specs/models/shared/capability-profile.model.yaml
+
+  invocation:
+    type: object
+    required: true
+    description: "How to reach and launch this agent"
+    see: specs/models/shared/invocation-config.model.yaml
+
+  maxConcurrentTasks:
+    type: integer
+    required: true
+    default: 1
+    description: "How many tasks this agent can handle simultaneously"
+
+  activeTasks:
+    type: integer
+    derived: true
+    description: "Count of tasks currently dispatched to this agent (not stored)"
+
+  registeredAt:
+    type: datetime
+    required: true
+    immutable: true
+
+  lastHealthCheck:
+    type: datetime
+    required: false
+    description: "Last time the PA verified this agent is reachable"
+
+relationships:
+  tasks:
+    type: has-many-refs
+    entity: Task
+    description: "Tasks currently assigned to this agent"
+
+rules:
+  - id: agent-type-matches-task
+    description: "Agent can only receive tasks matching its agentType"
+    enforced: domain
+
+  - id: agent-capacity-check
+    description: "PA must check activeTasks < maxConcurrentTasks before dispatch"
+    enforced: domain
+
+  - id: agent-reachable-before-dispatch
+    description: "PA should verify agent's invocation endpoint is reachable before dispatching"
+    enforced: domain
+
+  - id: agent-unique-id
+    description: "Agent IDs must be unique across the registry"
+    enforced: validation

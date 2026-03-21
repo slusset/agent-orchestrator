@@ -1,0 +1,50 @@
+id: status-update
+type: model
+value_object: StatusUpdate
+description: |
+  A heartbeat or progress report from an agent to the PA.
+  Sent periodically during task execution via the callback_url.
+  Append-only — status updates are events, not mutable state.
+
+sources:
+  stories:
+    - specs/stories/agent-lifecycle/agent-reports-progress.md
+    - specs/stories/monitoring/pa-detects-timeout.md
+
+fields:
+  taskId:
+    type: string
+    required: true
+    description: "Which task this update is for"
+
+  status:
+    type: enum
+    required: true
+    values: [in_progress, blocked]
+    description: "Current agent state"
+
+  message:
+    type: string
+    required: false
+    description: "Human-readable description of what the agent is doing"
+    example: "Running unit tests (12/15 passed)"
+
+  progressPct:
+    type: integer
+    required: false
+    constraints:
+      min: 0
+      max: 100
+    description: "Optional progress percentage"
+
+  metadata:
+    type: map
+    required: false
+    description: "Agent-specific metadata (files changed, test counts, etc.)"
+
+  timestamp:
+    type: datetime
+    required: true
+    description: "When this update was generated"
+
+equality: "Value equality on all fields (but typically compared by timestamp)"

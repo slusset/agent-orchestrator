@@ -1,0 +1,53 @@
+id: task-result
+type: model
+value_object: TaskResult
+description: |
+  The completion payload from an agent. Sent once when the agent finishes
+  (success or failure). Immutable after creation. The PA uses this to
+  evaluate the task and decide what to do next.
+
+sources:
+  stories:
+    - specs/stories/agent-lifecycle/agent-reports-progress.md
+    - specs/stories/agent-lifecycle/agent-handles-failure.md
+    - specs/stories/orchestration/pa-evaluates-and-routes.md
+
+fields:
+  taskId:
+    type: string
+    required: true
+
+  success:
+    type: boolean
+    required: true
+    description: "Did the agent accomplish its objective?"
+
+  summary:
+    type: string
+    required: true
+    description: "Human-readable summary of what happened"
+    example: "Implemented user auth with email/password, created PR #42"
+
+  artifacts:
+    type: list
+    items: string
+    description: "Deliverables: PR URLs, deployment URLs, test report paths"
+    example: ["https://github.com/org/repo/pull/42"]
+
+  errors:
+    type: list
+    items: string
+    description: "Error messages (populated on failure)"
+    example: ["Tests failed: 3 assertions in auth.test.tsx"]
+
+  metadata:
+    type: map
+    required: false
+    description: "Agent-specific details (files changed, test counts, deploy info)"
+
+  completedAt:
+    type: datetime
+    required: true
+
+equality: "Two TaskResults are equal if they have the same taskId"
+immutable: true

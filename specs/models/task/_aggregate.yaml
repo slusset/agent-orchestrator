@@ -1,0 +1,31 @@
+aggregate: Task
+root: Task
+description: |
+  The Task aggregate represents a unit of work dispatched to a single agent.
+  Each task carries a TaskBundle (the hand-off contract) and tracks its lifecycle
+  from dispatch through completion. Tasks are owned by a Story but managed
+  as their own aggregate because they have independent lifecycles and
+  may be retried or reassigned independently.
+
+entities:
+  - Task (root)
+
+value_objects:
+  - TaskId
+  - TaskStatus
+  - TaskPriority
+  - TaskBundle (and subtypes: CodingBundle, UATBundle, DevOpsBundle, PRBundle)
+  - StatusUpdate
+  - TaskResult
+
+invariants:
+  - A task must reference a parent story
+  - A task must have a valid TaskBundle
+  - A task must have a callback_url for reporting
+  - Only dispatched or in_progress tasks can be cancelled
+  - A completed task's result is immutable
+
+boundaries:
+  - TaskBundle is embedded (it's the task's defining content)
+  - StatusUpdates are append-only events, not embedded entities
+  - Agent is referenced by agent_type, not embedded

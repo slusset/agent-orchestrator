@@ -1,0 +1,103 @@
+id: deployment
+type: model
+entity: Deployment
+aggregate: Deployment
+description: |
+  A release of code to a target environment. Created and managed by the
+  DevOps Agent. Tracks multi-provider coordination and health status.
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-evaluates-and-routes.md
+    - specs/stories/orchestration/stakeholder-approves-deploy.md
+  journeys:
+    - specs/journeys/feature-request-lifecycle.md
+
+identity:
+  field: id
+  type: string
+  format: prefixed-ulid
+  prefix: "deploy_"
+  example: "deploy_01HQ3K4N5M6P7R8S9T0UVWXYZ"
+
+attributes:
+  taskId:
+    type: string
+    required: true
+    description: "The DevOps task that triggered this deployment"
+
+  storyId:
+    type: string
+    required: true
+    description: "The story being deployed"
+
+  environment:
+    type: enum
+    required: true
+    values: [dev, uat, staging, production]
+
+  status:
+    type: enum
+    required: true
+    values: [pending, deploying, health_checking, succeeded, failed, rolled_back]
+
+  providers:
+    type: list
+    items:
+      type: enum
+      values: [vercel, railway, supabase]
+    description: "Infrastructure providers involved"
+
+  commitSha:
+    type: string
+    required: true
+    description: "Git commit being deployed"
+
+  branch:
+    type: string
+    required: true
+
+  healthCheckUrl:
+    type: string
+    required: false
+    format: uri
+
+  healthCheckPassed:
+    type: boolean
+    required: false
+
+  deployedAt:
+    type: datetime
+    required: false
+
+  rolledBackAt:
+    type: datetime
+    required: false
+
+  rollbackReason:
+    type: string
+    required: false
+
+relationships:
+  task:
+    type: belongs-to-ref
+    entity: Task
+    required: true
+
+  story:
+    type: belongs-to-ref
+    entity: Story
+    required: true
+
+rules:
+  - id: prod-requires-approval
+    description: "Production deployments must have stakeholder approval"
+    enforced: domain
+
+  - id: health-check-before-success
+    description: "Deployment is not successful until health check passes"
+    enforced: domain
+
+  - id: no-rollback-if-superseded
+    description: "Cannot rollback if a newer deployment exists to same environment"
+    enforced: domain

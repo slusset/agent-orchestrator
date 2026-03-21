@@ -1,0 +1,192 @@
+id: story-lifecycle
+type: lifecycle
+entity: Story
+description: "State transitions for a story through its full lifecycle"
+
+sources:
+  stories:
+    - specs/stories/orchestration/stakeholder-requests-feature.md
+    - specs/stories/orchestration/pa-evaluates-and-routes.md
+    - specs/stories/orchestration/stakeholder-approves-deploy.md
+  journeys:
+    - specs/journeys/feature-request-lifecycle.md
+
+initial_state: intake
+
+states:
+  intake:
+    description: "Stakeholder request received, not yet planned"
+    terminal: false
+
+  planning:
+    description: "PA is decomposing the request and preparing TaskBundles"
+    terminal: false
+
+  in_progress:
+    description: "Coding Agent is implementing the feature"
+    terminal: false
+
+  review:
+    description: "PR Agent is reviewing the pull request"
+    terminal: false
+
+  uat:
+    description: "UAT Agent is validating against acceptance criteria"
+    terminal: false
+
+  staging:
+    description: "Feature is deployed to staging, awaiting stakeholder review"
+    terminal: false
+
+  awaiting_approval:
+    description: "Stakeholder is reviewing on staging, PA waiting for go/no-go"
+    terminal: false
+
+  deploying:
+    description: "DevOps Agent is deploying to production"
+    terminal: false
+
+  completed:
+    description: "Feature is live in production, story is closed"
+    terminal: true
+
+  failed:
+    description: "Story failed after exhausting retries and escalation"
+    terminal: true
+
+  cancelled:
+    description: "Stakeholder cancelled the story"
+    terminal: true
+
+transitions:
+  plan:
+    from: intake
+    to: planning
+    trigger: system
+    description: "PA begins planning the work"
+    guards: []
+
+  dispatch_coding:
+    from: planning
+    to: in_progress
+    trigger: system
+    description: "PA dispatches CodingBundle to Coding Agent"
+    guards:
+      - plan-is-complete
+    effects:
+      - create Task(type=coding)
+
+  submit_for_review:
+    from: in_progress
+    to: review
+    trigger: system
+    description: "Coding Agent completes, PA routes to PR review"
+    guards:
+      - coding-task-succeeded
+      - pr-url-exists
+
+  approve_pr:
+    from: review
+    to: uat
+    trigger: system
+    description: "PR Agent approves and merges, PA routes to UAT"
+    guards:
+      - pr-review-passed
+      - pr-merged
+
+  pass_uat:
+    from: uat
+    to: staging
+    trigger: system
+    description: "UAT passes, PA deploys to staging"
+    guards:
+      - uat-task-succeeded
+    effects:
+      - create Task(type=devops, target=staging)
+
+  request_approval:
+    from: staging
+    to: awaiting_approval
+    trigger: system
+    description: "Staging deploy complete, PA requests stakeholder approval"
+    guards:
+      - staging-deploy-succeeded
+    effects:
+      - notify stakeholder
+
+  approve_production:
+    from: awaiting_approval
+    to: deploying
+    trigger: stakeholder
+    description: "Stakeholder approves production deployment"
+    guards:
+      - stakeholder-approved
+    effects:
+      - create Task(type=devops, target=production)
+
+  complete:
+    from: deploying
+    to: completed
+    trigger: system
+    description: "Production deploy succeeds, story is done"
+    guards:
+      - production-deploy-succeeded
+    effects:
+      - set completedAt to current timestamp
+      - close external ticket
+
+  # Failure and retry transitions
+  reject_pr:
+    from: review
+    to: in_progress
+    trigger: system
+    description: "PR Agent requests changes, route back to Coding Agent"
+    guards: []
+    effects:
+      - create Task(type=coding) with feedback
+
+  fail_uat:
+    from: uat
+    to: in_progress
+    trigger: system
+    description: "UAT fails, route back to Coding Agent with failure details"
+    guards: []
+    effects:
+      - create Task(type=coding) with uat-feedback
+
+  reject_production:
+    from: awaiting_approval
+    to: in_progress
+    trigger: stakeholder
+    description: "Stakeholder rejects, route feedback back to Coding Agent"
+    guards: []
+
+  fail:
+    from: [in_progress, review, uat, staging, deploying]
+    to: failed
+    trigger: system
+    description: "Unrecoverable failure after exhausting retries"
+    guards:
+      - retries-exhausted
+      - stakeholder-notified
+
+  cancel:
+    from: [intake, planning, in_progress, review, uat, staging, awaiting_approval]
+    to: cancelled
+    trigger: stakeholder
+    description: "Stakeholder cancels the story"
+    guards: []
+    effects:
+      - cancel all active tasks
+      - close external ticket as cancelled
+
+  _invalid:
+    - from: completed
+      to: any
+      reason: "Completed is a terminal state"
+    - from: cancelled
+      to: any
+      reason: "Cancelled is a terminal state"
+    - from: failed
+      to: any
+      reason: "Failed is a terminal state (create a new story to retry)"

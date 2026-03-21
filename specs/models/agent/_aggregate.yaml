@@ -1,0 +1,28 @@
+aggregate: Agent
+root: Agent
+description: |
+  The Agent aggregate represents a registered specialized worker.
+  Each agent has a capability profile (what it can do), an invocation
+  endpoint (how to reach it), and availability status. The PA consults
+  agent profiles during planning to decide which agent to dispatch to
+  and what instructions to include in the TaskBundle.
+
+entities:
+  - Agent (root)
+
+value_objects:
+  - AgentId
+  - AgentType
+  - CapabilityProfile
+  - InvocationConfig
+
+invariants:
+  - An agent must have a unique identifier
+  - An agent must have at least one implicit skill
+  - An agent's invocation endpoint must be reachable before dispatch
+  - An agent can only handle tasks matching its agent_type
+
+boundaries:
+  - CapabilityProfile is embedded (defines the agent)
+  - Tasks are referenced by ID, not embedded
+  - Active task count is derived, not stored

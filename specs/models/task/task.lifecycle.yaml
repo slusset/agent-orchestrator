@@ -1,0 +1,144 @@
+id: task-lifecycle
+type: lifecycle
+entity: Task
+description: "State transitions for a task dispatched to an agent"
+
+sources:
+  stories:
+    - specs/stories/agent-lifecycle/agent-receives-bundle.md
+    - specs/stories/agent-lifecycle/agent-reports-progress.md
+    - specs/stories/agent-lifecycle/agent-handles-failure.md
+    - specs/stories/monitoring/pa-detects-timeout.md
+  journeys:
+    - specs/journeys/agent-execution-lifecycle.md
+    - specs/journeys/watchdog-escalation.md
+
+initial_state: pending
+
+states:
+  pending:
+    description: "Task created but not yet sent to an agent"
+    terminal: false
+
+  dispatched:
+    description: "TaskBundle sent to agent, awaiting acknowledgment"
+    terminal: false
+
+  in_progress:
+    description: "Agent is actively working, sending heartbeats"
+    terminal: false
+
+  blocked:
+    description: "Agent reported it is blocked on something"
+    terminal: false
+
+  completed:
+    description: "Agent reported success with TaskResult"
+    terminal: true
+
+  failed:
+    description: "Agent reported failure, or PA detected timeout"
+    terminal: true
+
+  cancelled:
+    description: "PA cancelled the task (timeout, reassignment, story cancelled)"
+    terminal: true
+
+transitions:
+  dispatch:
+    from: pending
+    to: dispatched
+    trigger: system
+    description: "PA sends TaskBundle to agent via dispatcher"
+    guards: []
+    effects:
+      - set dispatchedAt
+      - start watchdog timer
+
+  acknowledge:
+    from: dispatched
+    to: in_progress
+    trigger: agent
+    description: "Agent's first heartbeat confirms it received the bundle"
+    guards: []
+    effects:
+      - set lastHeartbeat
+
+  heartbeat:
+    from: in_progress
+    to: in_progress
+    trigger: agent
+    description: "Agent sends periodic progress update"
+    guards: []
+    effects:
+      - update lastHeartbeat
+      - reset watchdog timer
+
+  block:
+    from: in_progress
+    to: blocked
+    trigger: agent
+    description: "Agent reports it is blocked"
+    guards: []
+    effects:
+      - update lastHeartbeat
+
+  unblock:
+    from: blocked
+    to: in_progress
+    trigger: agent
+    description: "Agent resumes work after being unblocked"
+    guards: []
+
+  complete:
+    from: [in_progress, blocked]
+    to: completed
+    trigger: agent
+    description: "Agent reports successful completion"
+    guards: []
+    effects:
+      - set completedAt
+      - store TaskResult
+      - stop watchdog timer
+
+  fail:
+    from: [dispatched, in_progress, blocked]
+    to: failed
+    trigger: agent
+    description: "Agent reports failure"
+    guards: []
+    effects:
+      - set completedAt
+      - store TaskResult with errors
+      - stop watchdog timer
+
+  timeout:
+    from: [dispatched, in_progress, blocked]
+    to: failed
+    trigger: system
+    description: "PA's watchdog detects no heartbeat within threshold"
+    guards:
+      - exceeded-timeout-minutes
+    effects:
+      - record timeout as failure reason
+
+  cancel:
+    from: [pending, dispatched, in_progress, blocked]
+    to: cancelled
+    trigger: system
+    description: "PA cancels the task (story cancelled, reassignment, etc.)"
+    guards: []
+    effects:
+      - attempt to notify agent
+      - stop watchdog timer
+
+  _invalid:
+    - from: completed
+      to: any
+      reason: "Completed is terminal — create a new task to retry"
+    - from: failed
+      to: any
+      reason: "Failed is terminal — PA creates a new task for retry"
+    - from: cancelled
+      to: any
+      reason: "Cancelled is terminal"

@@ -29,3 +29,16 @@ scope:
     - specs/stories/agent-lifecycle/agent-handles-failure.md
     - specs/stories/monitoring/pa-detects-timeout.md
     - specs/stories/monitoring/pa-escalates-to-stakeholder.md
+
+  models:
+    - specs/models/story/story.model.yaml
+    - specs/models/story/story.lifecycle.yaml
+    - specs/models/task/task.model.yaml
+    - specs/models/task/task.lifecycle.yaml
+    - specs/models/agent/agent.model.yaml
+    - specs/models/deployment/deployment.model.yaml
+    - specs/models/shared/task-bundle.model.yaml
+    - specs/models/shared/status-update.model.yaml
+    - specs/models/shared/task-result.model.yaml
+    - specs/models/shared/capability-profile.model.yaml
+    - specs/models/shared/invocation-config.model.yaml

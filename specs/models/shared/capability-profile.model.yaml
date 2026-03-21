@@ -1,0 +1,55 @@
+id: capability-profile
+type: model
+value_object: CapabilityProfile
+description: |
+  What the PA knows about an agent's capabilities. Used during planning
+  to decide which agent to dispatch to and what instructions to include
+  in the TaskBundle.
+
+  Key distinction:
+  - implicitSkills: Agent knows these — PA doesn't need to explain
+  - configurableSkills: PA must include instructions if it wants these used
+  - tools: External tools the agent has access to
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/stories/agent-lifecycle/agent-receives-bundle.md
+
+fields:
+  implicitSkills:
+    type: list
+    items: string
+    required: true
+    description: "Skills the agent has natively (PA doesn't need to instruct)"
+    example: ["python", "git", "pytest", "code-review"]
+
+  configurableSkills:
+    type: list
+    items: string
+    required: false
+    description: "Skills the agent CAN use but needs explicit instructions for"
+    example: ["bdd-specs", "playwright", "docker", "terraform"]
+
+  tools:
+    type: list
+    items: string
+    required: true
+    description: "External tools the agent has access to"
+    example: ["git", "gh-cli", "npm", "pytest", "curl"]
+
+  supportedLanguages:
+    type: list
+    items: string
+    required: false
+    description: "Programming languages the agent can work with"
+    example: ["python", "typescript", "javascript"]
+
+  supportedFrameworks:
+    type: list
+    items: string
+    required: false
+    description: "Frameworks the agent is familiar with"
+    example: ["nextjs", "fastapi", "react", "supabase"]
+
+equality: "Value equality on all fields"

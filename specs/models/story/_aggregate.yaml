@@ -1,0 +1,26 @@
+aggregate: Story
+root: Story
+description: |
+  The Story aggregate represents a stakeholder feature request from intake
+  through production deployment. It is the PA's primary unit of coordination —
+  each story spawns tasks dispatched to agents, and the PA manages the story's
+  progression through the lifecycle.
+
+entities:
+  - Story (root)
+
+value_objects:
+  - StoryId
+  - StoryStatus
+  - AcceptanceCriteria
+
+invariants:
+  - A story must have a stakeholder and an objective
+  - A story cannot advance to the next phase until the current phase's tasks complete
+  - Only the stakeholder can approve production deployment
+  - A story cannot be closed until all tasks are completed or cancelled
+
+boundaries:
+  - Tasks are referenced by ID, not embedded (Task is its own aggregate)
+  - Agent details are referenced by agent_id, not embedded
+  - External system references (JIRA ID, PR URL) are stored as value objects
