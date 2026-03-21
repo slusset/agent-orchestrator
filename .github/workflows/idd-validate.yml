@@ -1,0 +1,60 @@
+name: IDD Validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'specs/**'
+      - 'src/**'
+      - 'tests/**'
+
+jobs:
+  validate-specs:
+    name: Validate IDD Specs
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Validate IDD specs
+        run: ./scripts/validate-idd.sh
+
+  validate-code:
+    name: Validate Code
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Type check
+        run: uv run python -c "from src.contracts import *; from src.agents import *; from src.orchestrator import *; print('All imports OK')"
+
+      - name: Run tests
+        run: |
+          if [ -d "tests" ] && [ "$(find tests -name '*.py' -not -name '__init__.py' | head -1)" ]; then
+            uv run pytest tests/ -v
+          else
+            echo "No tests found yet — skipping"
+          fi

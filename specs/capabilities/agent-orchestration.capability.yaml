@@ -1,0 +1,31 @@
+id: agent-orchestration
+type: capability
+description: >
+  Multi-agent orchestration system where a Primary Agent (PM) coordinates
+  specialized agents (Coding, UAT, DevOps, PR) to deliver features through
+  a full lifecycle: plan → implement → review → test → deploy.
+
+scope:
+  personas:
+    - specs/personas/stakeholder.md
+    - specs/personas/primary-agent.md
+    - specs/personas/coding-agent.md
+    - specs/personas/uat-agent.md
+    - specs/personas/devops-agent.md
+    - specs/personas/pr-agent.md
+
+  journeys:
+    - specs/journeys/feature-request-lifecycle.md
+    - specs/journeys/agent-execution-lifecycle.md
+    - specs/journeys/watchdog-escalation.md
+
+  stories:
+    - specs/stories/orchestration/stakeholder-requests-feature.md
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/stories/orchestration/pa-evaluates-and-routes.md
+    - specs/stories/orchestration/stakeholder-approves-deploy.md
+    - specs/stories/agent-lifecycle/agent-receives-bundle.md
+    - specs/stories/agent-lifecycle/agent-reports-progress.md
+    - specs/stories/agent-lifecycle/agent-handles-failure.md
+    - specs/stories/monitoring/pa-detects-timeout.md
+    - specs/stories/monitoring/pa-escalates-to-stakeholder.md
