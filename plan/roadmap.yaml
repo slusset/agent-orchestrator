@@ -88,7 +88,7 @@ milestones:
     name: FastAPI callback server for PA
     description: HTTP server that receives StatusUpdate and TaskResult POSTs from
       agents, and resumes the graph via Command(resume=...).
-    status: in_progress
+    status: complete
     spec_refs:
     - specs/features/agent-lifecycle/agent-reports-progress.feature
     - specs/stories/agent-lifecycle/agent-reports-progress.md
@@ -99,8 +99,11 @@ milestones:
     name: Dispatch TaskBundles to remote agents over HTTP
     description: Dispatcher sends bundles to agent runner endpoints. Handles connection
       errors, retries, and unavailability.
-    status: not_started
-    spec_refs: []
+    status: complete
+    spec_refs:
+    - specs/features/orchestration/pa-plans-and-dispatches.feature
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/features/agent-lifecycle/agent-receives-bundle.feature
     issue_refs: []
     depends_on:
     - callback-server
@@ -260,5 +263,52 @@ milestones:
   - PA creates TaskBundles enriched with JIRA story context
   - PA updates JIRA status as story progresses
   - Confluence specs are pulled into TaskBundle context
+- id: m2b-smoke-test
+  name: 'Smoke Test: Hello World Orchestration'
+  description: 'Manual acceptance testing milestone. Run a simple hello-world agent
+    through the full dispatch→execute→callback→resume loop. Verify runtime observability:
+    logs, health endpoints, task tracking. This is a confidence gate before investing
+    in the real coding agent (m3).'
+  status: planned
+  depends_on:
+  - m2-invocation
+  capabilities:
+  - id: stub-agent
+    name: Hello-world stub agent that sleeps and returns success
+    description: Minimal agent that accepts a TaskBundle, sends a heartbeat, waits
+      briefly, then returns a successful TaskResult. No LLM, no git — just proves
+      the plumbing works.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: e2e-local-demo
+    name: End-to-end local demo script
+    description: Single script that starts callback server, dispatches to stub agent
+      (HTTP or local), and prints the full lifecycle. The "show it working" artifact.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - stub-agent
+  - id: runtime-observability
+    name: Structured logging and health check verification
+    description: Verify that logs, health endpoints, and task tracking provide clear
+      visibility into what is happening at runtime. No black boxes.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - stub-agent
+  target_date: null
+  started_at: null
+  completed_at: null
+  success_criteria:
+  - PA dispatches a TaskBundle to a stub agent via HTTP
+  - Stub agent sends heartbeat status updates back to PA callback server
+  - Stub agent sends TaskResult, PA graph resumes and reaches END
+  - Health endpoint shows running tasks during execution
+  - Full flow observable via structured logs (no black boxes)
+  - Can run the demo with a single command (e.g., uv run python -m demo)
 created_at: '2026-03-22T14:33:25.360602'
-updated_at: '2026-03-22T22:24:22.425109'
+updated_at: '2026-03-22T22:30:32.887675'
