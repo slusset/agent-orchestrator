@@ -80,7 +80,7 @@ milestones:
   description: The PA can actually dispatch TaskBundles to agents and receive callbacks.
     HTTP callback server, agent dispatch over HTTP, GitHub webhook receiver for PR
     events.
-  status: in_progress
+  status: complete
   depends_on:
   - m1-foundation
   capabilities:
@@ -111,14 +111,15 @@ milestones:
     name: GitHub webhook receiver for PR events
     description: Receives PR created/merged/closed events from GitHub. Correlates
       PR URL to task_id and triggers graph resume.
-    status: not_started
-    spec_refs: []
+    status: complete
+    spec_refs:
+    - specs/features/orchestration/pa-evaluates-and-routes.feature
     issue_refs: []
     depends_on:
     - callback-server
   target_date: null
   started_at: '2026-03-22T22:21:47.961806'
-  completed_at: null
+  completed_at: '2026-03-22T22:38:47.096278'
   success_criteria:
   - Agent runner accepts TaskBundle via HTTP POST and returns 202
   - Callback server receives StatusUpdate and resumes graph
@@ -311,4 +312,4 @@ milestones:
   - Full flow observable via structured logs (no black boxes)
   - Can run the demo with a single command (e.g., uv run python -m demo)
 created_at: '2026-03-22T14:33:25.360602'
-updated_at: '2026-03-22T22:30:32.887675'
+updated_at: '2026-03-22T22:38:47.096289'
