@@ -1,205 +1,252 @@
+#!/usr/bin/env python3
 """
-Demo: End-to-end flow of the orchestrator.
+Demo: Hello World Agent Orchestration
 
-Shows the full cycle:
-1. Stakeholder sends a request
-2. PA plans and dispatches to Coding Agent
-3. Graph INTERRUPTS (waits for callback)
-4. Coding Agent runs in background, completes
-5. Callback resumes the graph
-6. PA evaluates and routes to next agent
+Runs the full dispatch→execute→callback→resume loop locally:
 
-Run with: uv run python demo.py
+  1. Starts the PA callback server (FastAPI on port 9000)
+  2. Starts a stub agent runner (FastAPI on port 9001)
+  3. PA dispatches a TaskBundle to the stub agent via HTTP
+  4. Stub agent sends heartbeats back to the PA callback server
+  5. Stub agent sends TaskResult, PA logs the completion
 
-Note: Requires ANTHROPIC_API_KEY for the planning step (LLM call).
-Set it to skip planning: SKIP_LLM=1 uv run python demo.py
+Run with:
+    uv run python demo.py
+
+What to watch for in the logs:
+    [callback]  — PA receiving agent heartbeats and results
+    [stub]      — stub agent executing its work cycle
+    [dispatch]  — PA dispatching the TaskBundle
+    [runner]    — agent runner accepting and launching the task
+
+Pass --fail to see the failure path:
+    uv run python demo.py --fail
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
-import os
+import sys
+import time
+
+import httpx
+import uvicorn
+
+# ---------------------------------------------------------------------------
+# Logging setup — this is the "runtime observability" capability
+# ---------------------------------------------------------------------------
+
+LOG_FORMAT = (
+    "\033[90m%(asctime)s.%(msecs)03d\033[0m "
+    "%(levelname)-5s "
+    "\033[1m%(message)s\033[0m"
+)
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    format=LOG_FORMAT,
+    datefmt="%H:%M:%S",
 )
+# Quiet down noisy libraries
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
 logger = logging.getLogger("demo")
 
 
-async def main() -> None:
-    from src.orchestrator.server import OrchestratorServer
+# ---------------------------------------------------------------------------
+# Server startup helpers
+# ---------------------------------------------------------------------------
 
-    print("\n" + "=" * 60)
-    print("  Agent Orchestrator — End-to-End Demo")
-    print("=" * 60 + "\n")
 
-    # Create the server (uses log transport for local dev)
-    server = OrchestratorServer(transport="log")
+async def start_callback_server(port: int = 9000):
+    """Start the PA callback server in the background."""
+    from src.orchestrator.callback_server import create_callback_app
 
-    # Define the story
-    story = {
-        "story_id": "PROJ-42",
-        "objective": "Add user authentication with email/password",
-        "context": "We're building a Next.js app with Supabase backend. "
-        "Need login, signup, and password reset flows.",
-        "acceptance_criteria": [
-            "Users can sign up with email and password",
-            "Users can log in with existing credentials",
-            "Users can reset their password via email",
-            "All auth routes are protected",
-            "Tests cover happy path and error cases",
-        ],
-        "repo_url": "git@github.com:example/my-app.git",
-        "focus_paths": ["src/auth/", "src/app/(auth)/"],
-        "protected_paths": [".github/", "infra/", "supabase/migrations/"],
-    }
+    app, callback_server = create_callback_app(callback_path="/callback")
 
-    # Step 1: Start the story
-    print("📋 Step 1: Stakeholder sends request to PA\n")
-    print(f"   Story: {story['story_id']} — {story['objective']}")
-    print(f"   Criteria: {len(story['acceptance_criteria'])} acceptance criteria\n")
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    task = asyncio.create_task(server.serve())
+    # Wait for server to be ready
+    for _ in range(50):
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"http://127.0.0.1:{port}/health")
+                if r.status_code == 200:
+                    break
+        except Exception:
+            await asyncio.sleep(0.1)
+
+    return server, task, callback_server
+
+
+async def start_agent_runner(port: int = 9001):
+    """Start the stub agent runner in the background."""
+    from src.agents.runner import create_agent_app
+
+    app = create_agent_app("stub", max_concurrent=2, transport="http")
+
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    task = asyncio.create_task(server.serve())
+    # Wait for server to be ready
+    for _ in range(50):
+        try:
+            async with httpx.AsyncClient() as client:
+                r = await client.get(f"http://127.0.0.1:{port}/status")
+                if r.status_code == 200:
+                    break
+        except Exception:
+            await asyncio.sleep(0.1)
+
+    return server, task
+
+
+# ---------------------------------------------------------------------------
+# Demo
+# ---------------------------------------------------------------------------
+
+
+async def run_demo(should_fail: bool = False):
+    """Run the full orchestration demo."""
+    PA_PORT = 9000
+    AGENT_PORT = 9001
+    CALLBACK_URL = f"http://127.0.0.1:{PA_PORT}/callback"
+
+    logger.info("=" * 60)
+    logger.info("  AGENT ORCHESTRATOR — Hello World Demo")
+    logger.info("=" * 60)
+    logger.info("")
+
+    # --- Step 1: Start servers ---
+    logger.info("Starting PA callback server on port %d...", PA_PORT)
+    pa_server, pa_task, callback_srv = await start_callback_server(PA_PORT)
+
+    logger.info("Starting stub agent runner on port %d...", AGENT_PORT)
+    agent_server, agent_task = await start_agent_runner(AGENT_PORT)
+
+    logger.info("Both servers running")
+    logger.info("")
 
     try:
-        thread_id = await server.start_story(
-            message=f"Please implement {story['objective']}. "
-            f"Story ID: {story['story_id']}. "
-            f"Acceptance criteria: {', '.join(story['acceptance_criteria'])}",
-            story=story,
-            context={"callback_url": "http://localhost:8000/callback"},
-        )
-    except Exception as e:
-        if "ANTHROPIC_API_KEY" in str(e) or "api_key" in str(e).lower():
-            print("   ⚠ No ANTHROPIC_API_KEY set — running without LLM planning step")
-            print("   (In production, the PA would use Claude to create the plan)\n")
-            # Fall back to direct dispatch without LLM
-            thread_id = await _demo_without_llm(server, story)
-        else:
-            raise
+        # --- Step 2: Check agent status ---
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"http://127.0.0.1:{AGENT_PORT}/status")
+            status = r.json()
+            logger.info(
+                "Agent runner status: type=%s, available=%s, max_concurrent=%d",
+                status["agent_type"],
+                status["available"],
+                status["max_concurrent"],
+            )
 
-    print(f"\n   Thread ID: {thread_id}")
-    print("   ⏸  Graph is now INTERRUPTED — waiting for agent callback\n")
-
-    # Give the agent a moment to "work"
-    await asyncio.sleep(0.5)
-
-    # Step 2: Simulate the agent completing (in real life, this comes from the HTTP callback)
-    print("🔧 Step 2: Coding Agent completes and sends callback\n")
-
-    agent_result = {
-        "task_id": _get_active_task_id(server, thread_id),
-        "success": True,
-        "summary": "Implemented user authentication with email/password. "
-        "Added signup, login, and password reset flows with Supabase Auth.",
-        "artifacts": ["https://github.com/example/my-app/pull/42"],
-        "metadata": {
-            "branch": "feature/abc123-add-user-authentication",
-            "files_changed": [
-                "src/auth/login.tsx",
-                "src/auth/signup.tsx",
-                "src/auth/reset-password.tsx",
-                "src/auth/auth-provider.tsx",
-                "src/auth/__tests__/auth.test.tsx",
+        # --- Step 3: Dispatch TaskBundle ---
+        logger.info("")
+        logger.info("Dispatching TaskBundle to stub agent...")
+        bundle = {
+            "task_id": "demo-001",
+            "objective": "Say hello to the world",
+            "callback_url": CALLBACK_URL,
+            "acceptance_criteria": [
+                "Agent receives the bundle",
+                "Agent sends heartbeats",
+                "Agent returns success",
             ],
-            "tests_passed": True,
-            "test_count": 12,
-        },
-    }
+            "metadata": {
+                "work_seconds": 2.0,
+                "fail": should_fail,
+                "fail_message": "Demo intentional failure — this is expected!",
+            },
+        }
 
-    print(f"   PR: {agent_result['artifacts'][0]}")
-    print(f"   Files changed: {len(agent_result['metadata']['files_changed'])}")
-    print(f"   Tests: {agent_result['metadata']['test_count']} passed\n")
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"http://127.0.0.1:{AGENT_PORT}/execute",
+                json={"agent_type": "stub", "bundle": bundle},
+                timeout=5.0,
+            )
+            result = r.json()
+            logger.info(
+                "Agent accepted task: id=%s, status=%s",
+                result["task_id"],
+                result["status"],
+            )
 
-    # Resume the graph
-    result = await server.handle_agent_callback(thread_id, agent_result)
+        # --- Step 4: Wait for agent to finish ---
+        logger.info("")
+        logger.info("Waiting for agent to complete (watching callbacks)...")
+        logger.info("")
 
-    print("\n📊 Step 3: PA evaluates and routes\n")
-    if result:
-        messages = result.get("messages", [])
-        for msg in messages[-2:]:  # Show last couple messages
-            content = msg.content if hasattr(msg, "content") else msg.get("content", "")
-            if content:
-                print(f"   PA: {content}\n")
+        start = time.monotonic()
+        timeout = 10.0
 
-    print("=" * 60)
-    print("  Demo complete! Graph interrupted again, waiting for PR Agent.")
-    print("=" * 60 + "\n")
+        while time.monotonic() - start < timeout:
+            await asyncio.sleep(0.3)
 
-    await server.shutdown()
+            # Check if we got a result callback
+            if callback_srv.received_results:
+                break
 
+            # Log any heartbeats we've received
+            if callback_srv.received_updates:
+                for update in callback_srv.received_updates:
+                    logger.info(
+                        "  Heartbeat: status=%s, progress=%s%%, message=%s",
+                        update.get("status", "?"),
+                        update.get("progress_pct", "?"),
+                        update.get("message", ""),
+                    )
+                callback_srv._received_updates.clear()
 
-async def _demo_without_llm(server, story):
-    """Run the demo without the LLM planning step by directly dispatching."""
-    from langgraph.checkpoint.memory import MemorySaver
-    from langgraph.types import Command
+        # --- Step 5: Report results ---
+        logger.info("")
+        if callback_srv.received_results:
+            result = callback_srv.received_results[-1]
+            success = result.get("success", False)
+            if success:
+                logger.info("=" * 60)
+                logger.info("  DEMO PASSED — Full loop completed successfully!")
+                logger.info("=" * 60)
+                logger.info("  Task ID:    %s", result.get("task_id"))
+                logger.info("  Summary:    %s", result.get("summary"))
+                logger.info("  Artifacts:  %s", result.get("artifacts", []))
+            else:
+                logger.info("=" * 60)
+                logger.info("  DEMO: Agent reported failure (expected if --fail)")
+                logger.info("=" * 60)
+                logger.info("  Task ID:    %s", result.get("task_id"))
+                logger.info("  Summary:    %s", result.get("summary"))
+                logger.info("  Errors:     %s", result.get("errors", []))
+        else:
+            logger.error("  TIMEOUT — no result received within %.0fs", timeout)
 
-    from src.contracts import CodingBundle, TaskStatus
-    from src.orchestrator.state import OrchestratorState, TaskRecord
+        # --- Step 6: Health check ---
+        logger.info("")
+        async with httpx.AsyncClient() as client:
+            r = await client.get(f"http://127.0.0.1:{PA_PORT}/health")
+            health = r.json()
+            logger.info("PA health: %s", health)
 
-    thread_id = "demo-thread-001"
-    config = {"configurable": {"thread_id": thread_id}}
-
-    # Build bundle directly
-    bundle = CodingBundle(
-        objective=story["objective"],
-        context=story["context"],
-        acceptance_criteria=story["acceptance_criteria"],
-        story_id=story["story_id"],
-        callback_url="http://localhost:8000/callback",
-        repo_url=story["repo_url"],
-        focus_paths=story.get("focus_paths", []),
-        protected_paths=story.get("protected_paths", []),
-    )
-
-    task_record = TaskRecord(
-        task_id=bundle.task_id,
-        agent_type="coding",
-        bundle=bundle.model_dump(mode="json"),
-        status=TaskStatus.DISPATCHED.value,
-        last_update=None,
-        result=None,
-        pr_url=None,
-    )
-
-    # Manually set up state and invoke just the dispatch → wait portion
-    # by starting the graph with a pre-planned state
-    initial_state = {
-        "messages": [
-            {"role": "user", "content": f"Implement {story['objective']}"},
-            {"role": "assistant", "content": "Plan: Dispatch to Coding Agent for implementation."},
-        ],
-        "tasks": [task_record],
-        "current_story": story,
-        "context": {"callback_url": "http://localhost:8000/callback"},
-    }
-
-    # We need a graph that starts at wait_for_agent
-    # For the demo, we'll use the full graph but skip to dispatch
-    from src.orchestrator.graph import build_orchestrator_graph
-
-    graph = build_orchestrator_graph().compile(checkpointer=server.checkpointer)
-    server.graph = graph
-
-    # Store the task mapping
-    server._task_to_thread[bundle.task_id] = thread_id
-
-    # Invoke — will hit plan_work (needs LLM) so let's just set up state directly
-    # and use update_state to jump ahead
-    graph.update_state(config, initial_state)
-
-    return thread_id
+    finally:
+        # --- Shutdown ---
+        logger.info("")
+        logger.info("Shutting down servers...")
+        pa_server.should_exit = True
+        agent_server.should_exit = True
+        await asyncio.gather(pa_task, agent_task, return_exceptions=True)
+        logger.info("Done.")
 
 
-def _get_active_task_id(server, thread_id):
-    """Get the task_id of the most recently dispatched task."""
-    config = {"configurable": {"thread_id": thread_id}}
-    state = server.graph.get_state(config)
-    tasks = state.values.get("tasks", [])
-    for task in reversed(tasks):
-        if task["status"] == "dispatched":
-            return task["task_id"]
-    # Fallback
-    return tasks[-1]["task_id"] if tasks else "unknown"
+def main():
+    should_fail = "--fail" in sys.argv
+    asyncio.run(run_demo(should_fail))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()

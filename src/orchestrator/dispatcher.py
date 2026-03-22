@@ -22,6 +22,7 @@ import httpx
 
 from src.agents.base import BaseAgent
 from src.agents.coding_agent import CodingAgent
+from src.agents.stub_agent import StubAgent
 from src.contracts.capability_profile import (
     AgentCapabilityProfile,
     DEFAULT_PROFILES,
@@ -38,9 +39,7 @@ logger = logging.getLogger(__name__)
 # Local agent registry — agent_type → (bundle_class, agent_class)
 LOCAL_AGENT_REGISTRY: dict[str, tuple[type[TaskBundle], type[BaseAgent]]] = {
     "coding": (CodingBundle, CodingAgent),
-    # "uat": (UATBundle, UATAgent),
-    # "devops": (DevOpsBundle, DevOpsAgent),
-    # "pr": (PRBundle, PRAgent),
+    "stub": (TaskBundle, StubAgent),
 }
 
 

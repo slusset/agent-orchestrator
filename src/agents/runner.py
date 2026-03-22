@@ -25,6 +25,7 @@ from pydantic import BaseModel
 
 from src.agents.base import BaseAgent
 from src.agents.coding_agent import CodingAgent
+from src.agents.stub_agent import StubAgent
 from src.contracts.coding_bundle import CodingBundle
 from src.contracts.status_reporter import HttpStatusReporter, LogStatusReporter
 from src.contracts.task_bundle import TaskBundle
@@ -75,7 +76,7 @@ class CancelResponse(BaseModel):
 # Map agent_type → (bundle_class, agent_class)
 RUNNER_REGISTRY: dict[str, tuple[type[TaskBundle], type[BaseAgent]]] = {
     "coding": (CodingBundle, CodingAgent),
-    # Add more as agents are implemented
+    "stub": (TaskBundle, StubAgent),
 }
 
 
