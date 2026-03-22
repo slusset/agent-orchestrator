@@ -46,21 +46,49 @@ def plan_work(state: OrchestratorState) -> dict[str, Any]:
     """
     PA analyzes the stakeholder request and decides what to do.
 
-    Reads context from JIRA/Confluence (via state.context), breaks down
-    the work, and prepares TaskBundles for dispatch.
+    Reads strategic context from the roadmap (plan layer) and
+    project context from JIRA/Confluence (via state.context).
+    Uses both to plan work and prepare TaskBundles for dispatch.
+
+    The roadmap tells the PA:
+    - Where we are in the overall plan
+    - What milestones are active / available
+    - Which capabilities can be started
+    - What dependencies must be satisfied first
     """
     messages = state["messages"]
     context = state.get("context", {})
 
+    # Load strategic context from the plan layer
+    plan_context = {}
+    plan_path = context.get("plan_path", "plan/roadmap.yaml")
+    try:
+        from src.plan.manager import PlanManager
+
+        pm = PlanManager(plan_path)
+        pm.load()
+        plan_context = pm.planning_context()
+    except Exception as e:
+        logger.warning("Could not load plan context: %s", e)
+
     planning_prompt = (
         "You are a project manager orchestrating software development agents. "
-        "Based on the stakeholder request and project context, determine what "
-        "tasks need to be done and which agents should handle them.\n\n"
+        "Based on the stakeholder request, project context, and the current "
+        "roadmap status, determine what tasks need to be done and which "
+        "agents should handle them.\n\n"
         f"Project context: {context}\n\n"
+        f"Roadmap status: {plan_context}\n\n"
+        "Use the roadmap to understand:\n"
+        "- What has already been completed\n"
+        "- What milestones are currently active\n"
+        "- What capabilities are available to start\n"
+        "- What dependencies exist\n\n"
         "Respond with a structured plan including:\n"
-        "1. What the coding agent should build\n"
-        "2. Acceptance criteria\n"
-        "3. Any testing requirements\n"
+        "1. Which milestone/capability this work falls under\n"
+        "2. What the coding agent should build\n"
+        "3. Acceptance criteria\n"
+        "4. Any testing requirements\n"
+        "5. Whether any dependencies need to be completed first\n"
     )
 
     response = llm.invoke(

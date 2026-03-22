@@ -1,0 +1,248 @@
+id: agent-orchestrator-v1
+name: Agent Orchestrator v1
+description: Multi-agent orchestrator where a Primary Agent (PM) coordinates Coding,
+  UAT, DevOps, and PR agents through the full software delivery lifecycle. Built with
+  IDD-first methodology.
+version: 0.1.0
+milestones:
+- id: m1-foundation
+  name: 'Foundation: Contracts + Graph + Profiles'
+  description: Core data contracts (TaskBundle, StatusUpdate, TaskResult), orchestrator
+    StateGraph with interrupt pattern, agent capability profiles, and the plan layer
+    itself.
+  status: complete
+  depends_on: []
+  capabilities:
+  - id: task-bundle-contracts
+    name: TaskBundle hand-off contracts
+    description: Base + agent-specific bundles (Coding, UAT, DevOps, PR)
+    status: complete
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: status-reporting
+    name: Transport-agnostic status reporter
+    description: StatusReporter abstraction with HTTP and log implementations
+    status: complete
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: orchestrator-graph
+    name: LangGraph StateGraph with interrupt pattern
+    description: 'PA graph with dispatch → interrupt → resume → evaluate → route.
+      Full routing chain: coding → PR → UAT → devops → END.'
+    status: complete
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - task-bundle-contracts
+  - id: capability-profiles
+    name: Agent capability profiles and invocation layer
+    description: AgentCapabilityProfile with implicit/configurable skills, agent runner
+      HTTP service, profile-aware dispatcher.
+    status: complete
+    spec_refs: []
+    issue_refs:
+    - '#2'
+    depends_on:
+    - task-bundle-contracts
+  - id: plan-layer
+    name: Strategic planning layer with validation
+    description: Roadmap schema, PlanManager tools, CI validation. The PA's strategic
+      context for planning.
+    status: complete
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  target_date: null
+  started_at: '2026-03-21T00:00:00'
+  completed_at: null
+  success_criteria:
+  - All contracts import and instantiate correctly
+  - Graph compiles with all nodes and edges
+  - Capability profiles query correctly (implicit vs configurable skills)
+  - Plan validates via CI script
+- id: m2-invocation
+  name: 'Invocation: PA can talk to agents'
+  description: The PA can actually dispatch TaskBundles to agents and receive callbacks.
+    HTTP callback server, agent dispatch over HTTP, GitHub webhook receiver for PR
+    events.
+  status: planned
+  depends_on:
+  - m1-foundation
+  capabilities:
+  - id: callback-server
+    name: FastAPI callback server for PA
+    description: HTTP server that receives StatusUpdate and TaskResult POSTs from
+      agents, and resumes the graph via Command(resume=...).
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: agent-http-dispatch
+    name: Dispatch TaskBundles to remote agents over HTTP
+    description: Dispatcher sends bundles to agent runner endpoints. Handles connection
+      errors, retries, and unavailability.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - callback-server
+  - id: github-webhook-receiver
+    name: GitHub webhook receiver for PR events
+    description: Receives PR created/merged/closed events from GitHub. Correlates
+      PR URL to task_id and triggers graph resume.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - callback-server
+  target_date: null
+  started_at: null
+  completed_at: null
+  success_criteria:
+  - Agent runner accepts TaskBundle via HTTP POST and returns 202
+  - Callback server receives StatusUpdate and resumes graph
+  - End-to-end flow works across two separate processes
+- id: m3-coding-agent
+  name: 'First real agent: Coding Agent end-to-end'
+  description: The Coding Agent can clone a repo, create a branch, implement changes
+    using LLM, run tests, and create a PR. The full coding workflow from TaskBundle
+    to PR artifact.
+  status: planned
+  depends_on:
+  - m2-invocation
+  capabilities:
+  - id: git-workspace-management
+    name: Git workspace setup and branch management
+    description: Clone repos, create feature branches, manage worktrees
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: llm-driven-implementation
+    name: LLM-driven code implementation
+    description: Use Claude to analyze objectives, plan changes, and generate code.
+      Includes iterative fixing based on test failures.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - git-workspace-management
+  - id: test-execution
+    name: Test execution and coverage
+    description: Run pytest/vitest/etc, parse results, check coverage. Feed failures
+      back to LLM for fixing.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - git-workspace-management
+  - id: pr-creation
+    name: PR creation via GitHub API
+    description: Push branch, create draft PR with structured description, report
+      PR URL as task artifact.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - llm-driven-implementation
+    - test-execution
+  target_date: null
+  started_at: null
+  completed_at: null
+  success_criteria:
+  - Coding agent clones repo and creates feature branch
+  - LLM generates working code from objective + acceptance criteria
+  - Tests run and results are reported
+  - Draft PR is created with structured description
+  - Full flow from TaskBundle dispatch to PR artifact
+- id: m4-lifecycle
+  name: 'Full lifecycle: code → review → UAT → deploy'
+  description: Complete story lifecycle with all four agent types. PR Agent reviews
+    and merges, UAT Agent validates, DevOps Agent deploys. Watchdog handles timeouts.
+  status: planned
+  depends_on:
+  - m3-coding-agent
+  capabilities:
+  - id: pr-agent
+    name: PR Agent implementation
+    description: Reviews PRs against acceptance criteria, checks CI status, approves
+      or requests changes, manages merge.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: uat-agent
+    name: UAT Agent implementation
+    description: Validates features against specs and user journeys. Supports scripted,
+      exploratory, and regression profiles.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: devops-agent
+    name: DevOps Agent implementation
+    description: Deploys to Vercel/Railway/Supabase. Manages secrets, health checks,
+      and rollbacks.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: watchdog-escalation
+    name: Watchdog and escalation logic
+    description: Timeout monitoring, heartbeat checking, escalation to stakeholder
+      when agents are stuck or unresponsive.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  target_date: null
+  started_at: null
+  completed_at: null
+  success_criteria:
+  - A story flows through all four agents automatically
+  - Failures at any stage are caught and escalated
+  - Watchdog detects unresponsive agents
+- id: m5-integrations
+  name: 'External systems: JIRA, Confluence, GitHub'
+  description: PA pulls context from JIRA and Confluence to build TaskBundles. GitHub
+    integration provides event-driven PR lifecycle management.
+  status: planned
+  depends_on:
+  - m2-invocation
+  capabilities:
+  - id: jira-integration
+    name: JIRA integration
+    description: Pull stories, update status, create sub-tasks. Map JIRA workflow
+      to orchestrator lifecycle.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: confluence-integration
+    name: Confluence integration
+    description: Pull specs, architecture docs, and project context to enrich TaskBundle
+      context.
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on: []
+  - id: github-events-integration
+    name: GitHub events integration
+    description: 'Full GitHub lifecycle: PR events, check runs, deployment status.
+      Beyond basic webhook receiver.'
+    status: not_started
+    spec_refs: []
+    issue_refs: []
+    depends_on:
+    - github-webhook-receiver
+  target_date: null
+  started_at: null
+  completed_at: null
+  success_criteria:
+  - PA creates TaskBundles enriched with JIRA story context
+  - PA updates JIRA status as story progresses
+  - Confluence specs are pulled into TaskBundle context
+created_at: '2026-03-22T14:33:25.360602'
+updated_at: '2026-03-22T14:33:25.362152'
