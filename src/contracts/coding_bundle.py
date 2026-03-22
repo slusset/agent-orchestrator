@@ -7,6 +7,8 @@ The Coding Agent's completion artifact is a Pull Request.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import Field
 
 from .task_bundle import TaskBundle
@@ -57,3 +59,7 @@ class CodingBundle(TaskBundle):
     pr_title_prefix: str = ""  # e.g., "[PROJ-123]"
     pr_template: str | None = None  # Markdown template for PR body
     draft_pr: bool = True  # Create as draft, PA/PR Agent promotes when ready
+
+    # Agent CLI — which coding agent CLI to use for implementation
+    cli_type: str = "claude-code"  # claude-code | codex | gemini | aider | generic
+    cli_args: dict[str, Any] = Field(default_factory=dict)  # Extra kwargs for the CLI adapter

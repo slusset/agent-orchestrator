@@ -26,12 +26,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from src.agents.agent_cli import AgentCLI, CLIRequest, CLIResponse, ClaudeCodeCLI, create_cli
 from src.agents.base import BaseAgent
 from src.agents.git_workspace import GitWorkspace, TestResults, make_branch_name
 from src.contracts.coding_bundle import CodingBundle
 from src.contracts.status_reporter import StatusReporter
 
 logger = logging.getLogger(__name__)
+
+# Default CLI used when none is injected
+DEFAULT_CLI_TYPE = "claude-code"
 
 
 class CodingAgent(BaseAgent):
@@ -49,9 +53,16 @@ class CodingAgent(BaseAgent):
 
     agent_type = "coding"
 
-    def __init__(self, bundle: CodingBundle, reporter: StatusReporter | None = None) -> None:
+    def __init__(
+        self,
+        bundle: CodingBundle,
+        reporter: StatusReporter | None = None,
+        cli: AgentCLI | None = None,
+    ) -> None:
         super().__init__(bundle, reporter)
         self.coding_bundle = bundle  # Typed access to CodingBundle-specific fields
+        # CLI can be injected directly or resolved from bundle config
+        self.cli = cli or create_cli(bundle.cli_type, **bundle.cli_args)
         self._workspace: GitWorkspace | None = None
 
     async def execute(self) -> dict[str, Any]:
@@ -160,10 +171,8 @@ class CodingAgent(BaseAgent):
         """
         Analyze objective and create implementation plan.
 
-        In full implementation, this sends the objective + context +
-        acceptance criteria to an LLM and gets back a structured plan.
-
-        TODO: Wire to LLM (m3 capability: llm-driven-implementation)
+        Returns a plan dict with the prompt and scope for the CLI.
+        The actual analysis is done by the CLI agent during _implement.
         """
         logger.info(
             "[coding] Analyzing: %s with %d acceptance criteria",
@@ -171,11 +180,7 @@ class CodingAgent(BaseAgent):
             len(self.coding_bundle.acceptance_criteria),
         )
 
-        # Placeholder — LLM integration comes in llm-driven-implementation capability
         return {
-            "approach": "placeholder",
-            "files_to_modify": [],
-            "files_to_create": [],
             "focus_paths": self.coding_bundle.focus_paths,
             "protected_paths": self.coding_bundle.protected_paths,
         }
@@ -186,23 +191,63 @@ class CodingAgent(BaseAgent):
         plan: dict[str, Any],
     ) -> list[str]:
         """
-        Execute the implementation plan. Returns list of changed files.
+        Execute the implementation via the pluggable agent CLI.
 
-        In full implementation, this iterates over the plan and uses
-        an LLM to generate/modify code for each file.
-
-        TODO: Wire to LLM (m3 capability: llm-driven-implementation)
+        Sends the objective, acceptance criteria, and scope constraints
+        to the configured CLI agent (Claude Code, Codex, etc.) which
+        does the actual code generation in the workspace directory.
         """
-        logger.info("[coding] Implementing plan: %s", plan.get("approach"))
+        prompt = self._build_implementation_prompt(plan)
 
-        files_changed: list[str] = []
+        request = CLIRequest(
+            prompt=prompt,
+            work_dir=workspace.work_dir,
+            focus_files=self.coding_bundle.focus_paths,
+            read_only_files=[],
+            context=self.coding_bundle.context,
+            timeout=self.coding_bundle.timeout_minutes * 60,
+        )
 
-        # TODO: For each file in plan, use LLM to generate/modify code
-        # For now, return the plan's expected file list
-        files_changed.extend(plan.get("files_to_modify", []))
-        files_changed.extend(plan.get("files_to_create", []))
+        logger.info("[coding] Invoking %s CLI for implementation", self.cli.name)
+        response = await self.cli.run(request)
 
+        if not response.success:
+            raise RuntimeError(
+                f"CLI agent ({self.cli.name}) failed: {response.error or response.output[:500]}"
+            )
+
+        # Discover what files changed via git
+        files_changed = await workspace.get_changed_files()
+
+        logger.info(
+            "[coding] CLI agent completed: %d files changed",
+            len(files_changed),
+        )
         return files_changed
+
+    def _build_implementation_prompt(self, plan: dict[str, Any]) -> str:
+        """Build the prompt sent to the CLI agent."""
+        sections = [
+            f"## Objective\n{self.coding_bundle.objective}",
+        ]
+
+        if self.coding_bundle.acceptance_criteria:
+            criteria = "\n".join(f"- {c}" for c in self.coding_bundle.acceptance_criteria)
+            sections.append(f"## Acceptance Criteria\n{criteria}")
+
+        if plan.get("focus_paths"):
+            paths = ", ".join(plan["focus_paths"])
+            sections.append(f"## Scope\nFocus your changes on: {paths}")
+
+        if plan.get("protected_paths"):
+            paths = ", ".join(plan["protected_paths"])
+            sections.append(f"## Constraints\nDo NOT modify these paths: {paths}")
+
+        if self.coding_bundle.run_unit_tests:
+            frameworks = ", ".join(self.coding_bundle.test_frameworks) if self.coding_bundle.test_frameworks else "pytest"
+            sections.append(f"## Testing\nWrite or update tests. Test framework: {frameworks}")
+
+        return "\n\n".join(sections)
 
     async def _run_tests(self, workspace: GitWorkspace) -> TestResults:
         """Run tests based on CodingBundle test configuration."""
@@ -240,23 +285,41 @@ class CodingAgent(BaseAgent):
         test_results: TestResults,
     ) -> list[str]:
         """
-        Attempt to fix test failures using LLM.
+        Attempt to fix test failures using the CLI agent.
 
-        TODO: Wire to LLM (m3 capability: llm-driven-implementation)
+        Sends the test output to the CLI agent and asks it to fix
+        the failing tests. Returns list of files modified.
         """
         logger.info(
-            "[coding] Attempting to fix %d failure(s)",
+            "[coding] Attempting to fix %d failure(s) via %s CLI",
             len(test_results.failures),
+            self.cli.name,
         )
 
-        # Placeholder — LLM integration for fix attempts
-        # In real implementation:
-        # 1. Send test output + failing test code + implementation code to LLM
-        # 2. Get back suggested fixes
-        # 3. Apply fixes to workspace files
-        # 4. Return list of modified files
+        # Build a fix-specific prompt with test output
+        failures_text = "\n".join(test_results.failures) if test_results.failures else "See output below"
+        prompt = (
+            f"## Fix Test Failures\n\n"
+            f"The following tests are failing:\n{failures_text}\n\n"
+            f"## Test Output\n```\n{test_results.output[-3000:]}\n```\n\n"
+            f"Fix the code so all tests pass. Do not modify the test expectations "
+            f"unless they are clearly wrong."
+        )
 
-        return []
+        request = CLIRequest(
+            prompt=prompt,
+            work_dir=workspace.work_dir,
+            focus_files=self.coding_bundle.focus_paths,
+            timeout=min(self.coding_bundle.timeout_minutes * 60, 300),  # Cap fix attempts at 5min
+        )
+
+        response = await self.cli.run(request)
+
+        if not response.success:
+            logger.warning("[coding] Fix attempt failed: %s", response.error[:200])
+            return []
+
+        return await workspace.get_changed_files()
 
     async def _create_pr(
         self,
