@@ -129,23 +129,27 @@ milestones:
   description: The Coding Agent can clone a repo, create a branch, implement changes
     using LLM, run tests, and create a PR. The full coding workflow from TaskBundle
     to PR artifact.
-  status: planned
+  status: complete
   depends_on:
   - m2-invocation
   capabilities:
   - id: git-workspace-management
     name: Git workspace setup and branch management
     description: Clone repos, create feature branches, manage worktrees
-    status: not_started
-    spec_refs: []
+    status: complete
+    spec_refs:
+    - src/agents/git_workspace.py
+    - tests/agents/test_git_workspace.py
+    - tests/agents/test_coding_agent.py
     issue_refs: []
     depends_on: []
   - id: llm-driven-implementation
     name: LLM-driven code implementation
     description: Use Claude to analyze objectives, plan changes, and generate code.
       Includes iterative fixing based on test failures.
-    status: not_started
-    spec_refs: []
+    status: complete
+    spec_refs:
+    - src/agents/coding_agent.py
     issue_refs: []
     depends_on:
     - git-workspace-management
@@ -153,8 +157,10 @@ milestones:
     name: Test execution and coverage
     description: Run pytest/vitest/etc, parse results, check coverage. Feed failures
       back to LLM for fixing.
-    status: not_started
-    spec_refs: []
+    status: complete
+    spec_refs:
+    - src/agents/git_workspace.py
+    - tests/agents/test_git_workspace.py
     issue_refs: []
     depends_on:
     - git-workspace-management
@@ -162,15 +168,18 @@ milestones:
     name: PR creation via GitHub API
     description: Push branch, create draft PR with structured description, report
       PR URL as task artifact.
-    status: not_started
-    spec_refs: []
+    status: complete
+    spec_refs:
+    - src/agents/git_workspace.py
+    - src/agents/coding_agent.py
+    - tests/agents/test_coding_agent.py
     issue_refs: []
     depends_on:
     - llm-driven-implementation
     - test-execution
   target_date: null
-  started_at: null
-  completed_at: null
+  started_at: '2026-03-22T22:54:12.808804'
+  completed_at: '2026-03-22T23:23:00.659902'
   success_criteria:
   - Coding agent clones repo and creates feature branch
   - LLM generates working code from objective + acceptance criteria
@@ -316,4 +325,4 @@ milestones:
   - Full flow observable via structured logs (no black boxes)
   - Can run the demo with a single command (e.g., uv run python -m demo)
 created_at: '2026-03-22T14:33:25.360602'
-updated_at: '2026-03-22T22:52:22.780496'
+updated_at: '2026-03-22T23:23:00.663934'

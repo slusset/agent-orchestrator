@@ -279,15 +279,16 @@ class TestAgentRunnerEndpoints:
         from fastapi.testclient import TestClient
         from src.agents.runner import create_agent_app
 
-        app = create_agent_app("coding", transport="log")
+        # Use stub agent — coding agent now does real git clone which hangs in tests
+        app = create_agent_app("stub", transport="log")
         client = TestClient(app)
 
         response = client.post("/execute", json={
-            "agent_type": "coding",
+            "agent_type": "stub",
             "bundle": {
                 "objective": "Test task",
                 "callback_url": "http://localhost:9000/callback",
-                "repo_url": "https://github.com/org/repo",
+                "metadata": {"work_seconds": 0.01},
             },
         })
         assert response.status_code == 200
