@@ -62,7 +62,14 @@ class CodingAgent(BaseAgent):
         super().__init__(bundle, reporter)
         self.coding_bundle = bundle  # Typed access to CodingBundle-specific fields
         # CLI can be injected directly or resolved from bundle config
-        self.cli = cli or create_cli(bundle.cli_type, **bundle.cli_args)
+        # If bundle carries resolved_env, pass it to the CLI for subprocess injection
+        if cli:
+            self.cli = cli
+        else:
+            cli_kwargs = dict(bundle.cli_args)
+            if bundle.resolved_env:
+                cli_kwargs["env"] = {**cli_kwargs.get("env", {}), **bundle.resolved_env}
+            self.cli = create_cli(bundle.cli_type, **cli_kwargs)
         self._workspace: GitWorkspace | None = None
 
     async def execute(self) -> dict[str, Any]:

@@ -91,6 +91,18 @@ class TaskBundle(BaseModel):
     priority: TaskPriority = TaskPriority.MEDIUM
     timeout_minutes: int = Field(default=60, description="Max time before PA escalates")
 
+    # Environment — resolved credentials injected by the PA before dispatch
+    resolved_env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Resolved credential env vars for the agent subprocess. "
+            "The PA resolves these from the CredentialProvider before dispatch. "
+            "Never serialized to logs or external systems."
+        ),
+        json_schema_extra={"writeOnly": True},
+        exclude=True,  # Exclude from serialization (secrets!)
+    )
+
     # Metadata
     dispatched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     dispatched_by: str = "primary_agent"
