@@ -144,13 +144,25 @@ async def run_demo():
     logger.info("")
 
     # ------------------------------------------------------------------
-    # Step 3: Build CodingBundle
+    # Step 3: Load agent rules and build CodingBundle
     # ------------------------------------------------------------------
     logger.info("Step 3: Building CodingBundle...")
+
+    # Load agent rules (same as OrchestratorServer.boot() does)
+    agent_rules = ""
+    rules_path = Path(".pm/agent-rules.md")
+    if rules_path.exists():
+        agent_rules = rules_path.read_text()
+        logger.info("  Loaded agent rules from %s", rules_path)
+
+    bundle_context = OBJECTIVE
+    if agent_rules:
+        bundle_context = f"{agent_rules}"
 
     bundle = CodingBundle(
         objective=OBJECTIVE,
         acceptance_criteria=ACCEPTANCE_CRITERIA,
+        context=bundle_context,
         callback_url="http://localhost:9000/callback",  # Not used with LogStatusReporter
         repo_url=SANDBOX_REPO,
         base_branch=BASE_BRANCH,
