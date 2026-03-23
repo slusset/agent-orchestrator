@@ -16,6 +16,7 @@ description: |
 
 entities:
   - ProjectContext (root)
+  - ProjectStore (persistence + projection layer, see project-store.model.yaml)
 
 value_objects:
   - ProjectId
@@ -31,15 +32,16 @@ value_objects:
   - CredentialSpec
 
 invariants:
-  - A project must have a roadmap (plan/roadmap.yaml)
-  - A project must have a repo root (the directory containing .pm/)
-  - A project must have a workflow definition (.pm/workflow.yaml)
+  - A project must have a roadmap (plan/roadmap.yaml or equivalent in store)
+  - A project must have a configured ProjectStore (no cwd assumptions)
+  - A project must have a workflow definition (.pm/workflow.yaml or equivalent)
   - Config values must have valid agent CLI types from the registry
   - Memory entries are append-only (can be superseded but not deleted)
   - Eval history is immutable once recorded
   - Workflow steps must reference roles with registered capability profiles
   - Workflow routing must not create unbounded cycles (max_retries required)
   - All required credentials must be validated at boot before accepting work
+  - External system changes are proposals, validated before applying
 
 boundaries:
   - Roadmap is referenced, not embedded (managed by PlanManager)
@@ -48,3 +50,6 @@ boundaries:
   - Secrets/credentials are never stored in ProjectContext
   - Workflow defines WHAT roles execute; agents define WHO fulfills them
   - Methodology is advisory; it does not constrain the workflow pipeline
+  - ProjectStore abstracts persistence — PM never assumes filesystem access
+  - Projections are optional and eventually consistent with the store
+  - External systems are downstream views, store is source of truth

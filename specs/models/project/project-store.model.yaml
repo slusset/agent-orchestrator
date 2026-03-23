@@ -1,0 +1,526 @@
+id: project-store
+type: model
+entity: ProjectStore
+aggregate: ProjectContext
+description: |
+  The persistence and projection layer for project state (Layer 1).
+  ProjectStore abstracts WHERE and HOW project knowledge is stored,
+  and provides a mechanism to project state into external systems.
+
+  The PM never reads files or queries databases directly — it talks
+  to the ProjectStore. This decouples the PM from any specific
+  storage mechanism and enables:
+  - Local dev: filesystem in repo (.pm/, plan/, specs/)
+  - Hosted PM: SQLite or Postgres
+  - Multi-project: each project has its own store instance
+  - Enterprise: cloud-backed with external system projections
+
+  ProjectStore is NOT a generic file system or object store.
+  It understands the domain: roadmaps, memory, eval history,
+  config, credentials, workflows, threads. It provides typed
+  access to these, not raw bytes.
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+  journeys:
+    - specs/journeys/feature-request-lifecycle.md
+
+# ---------------------------------------------------------------------------
+# Core Interface
+# ---------------------------------------------------------------------------
+#
+# The ProjectStore has two responsibilities:
+#
+#   1. STORAGE — typed read/write for each Layer 1 concern
+#   2. PROJECTION — synchronize state to/from external systems
+#
+# These are distinct. Storage is required. Projections are optional.
+
+interface:
+  description: |
+    The abstract interface that all store backends implement.
+    Each method operates on a domain concept, not raw paths.
+
+  # --- Identity ---
+  project_id:
+    returns: string
+    description: "The project identifier this store serves"
+
+  # --- Roadmap ---
+  read_roadmap:
+    returns: Roadmap
+    description: |
+      Load the project roadmap. Returns a validated Roadmap object.
+      PlanManager wraps this with mutation logic and invariant checks.
+
+  write_roadmap:
+    params:
+      roadmap: Roadmap
+    description: |
+      Persist the roadmap. Called by PlanManager after validation.
+      May trigger projections (e.g., sync milestones to JIRA epics).
+
+  # --- Config ---
+  read_config:
+    returns: ProjectConfig
+    description: "Load project configuration (CLI defaults, credentials, etc.)"
+
+  write_config:
+    params:
+      config: ProjectConfig
+    description: "Persist project configuration"
+
+  # --- Workflow ---
+  read_workflow:
+    returns: Workflow
+    description: "Load the delivery pipeline definition"
+
+  write_workflow:
+    params:
+      workflow: Workflow
+    description: "Persist workflow definition"
+
+  # --- Memory ---
+  read_memory:
+    params:
+      category: MemoryCategory | None
+      limit: int | None
+    returns: list[MemoryEntry]
+    description: |
+      Read memory entries, optionally filtered by category.
+      Returns in reverse chronological order (newest first).
+      Superseded entries are included but marked.
+
+  append_memory:
+    params:
+      entry: MemoryEntry
+    returns: MemoryEntry
+    description: |
+      Append a memory entry. Returns the entry with assigned ID.
+      Memory is append-only — this never modifies existing entries.
+      May trigger projections (e.g., post observation to Slack).
+
+  # --- Eval History ---
+  read_eval_history:
+    params:
+      cli_type: string | None
+      limit: int | None
+    returns: list[EvalSnapshot]
+    description: "Read historical eval results, optionally filtered"
+
+  write_eval_snapshot:
+    params:
+      snapshot: EvalSnapshot
+    returns: EvalSnapshot
+    description: |
+      Record an eval run. Immutable once written.
+      May trigger projections (e.g., update dashboard metrics).
+
+  # --- Thread Cache ---
+  read_active_threads:
+    returns: list[ThreadRef]
+    description: |
+      Read the active thread cache. This is advisory — the
+      checkpoint store is the source of truth for thread state.
+
+  write_active_threads:
+    params:
+      threads: list[ThreadRef]
+    description: "Update the active thread cache"
+
+  # --- Credential Manifest ---
+  read_credential_manifest:
+    returns: list[CredentialSpec]
+    description: |
+      Read the credential manifest (what secrets the project needs).
+      Does NOT return secret values — only the manifest of what's required.
+
+  # --- Specs (read-only from PM perspective) ---
+  list_specs:
+    params:
+      prefix: string | None
+    returns: list[SpecRef]
+    description: |
+      List IDD spec artifacts. Used by plan_work for context.
+      The PM reads specs but never writes them (that's the coding agent).
+
+  read_spec:
+    params:
+      path: string
+    returns: string
+    description: "Read a spec file's content"
+
+# ---------------------------------------------------------------------------
+# Backends
+# ---------------------------------------------------------------------------
+
+backends:
+
+  filesystem:
+    description: |
+      The default backend. Reads and writes to the project repo's
+      filesystem. This is what we have today — .pm/, plan/, specs/
+      directories in the repo.
+
+      Constructor: FileSystemStore(repo_root: Path)
+
+      Mapping:
+        read_roadmap    → yaml.load(repo_root / plan/roadmap.yaml)
+        read_config     → yaml.load(repo_root / .pm/config.yaml)
+        read_workflow   → yaml.load(repo_root / .pm/workflow.yaml)
+        read_memory     → jsonl.load(repo_root / .pm/memory/entries.jsonl)
+        read_eval       → json.load(repo_root / .pm/eval-history/*.json)
+        read_threads    → json.load(repo_root / .pm/threads/active.json)
+        read_creds      → yaml.load(repo_root / .pm/credentials.yaml)
+        list_specs      → glob(repo_root / specs/**/*.{yaml,md,feature})
+        read_spec       → read(repo_root / specs/<path>)
+    pre_conditions:
+      - "repo_root must exist and contain plan/roadmap.yaml"
+    when_to_use: |
+      Local development, single-developer projects, getting started.
+      Zero infrastructure required — just a git repo.
+
+  sqlite:
+    description: |
+      Local database backend. Stores all Layer 1 state in a SQLite
+      database. Can co-exist with filesystem (DB in .pm/store.db)
+      or standalone.
+
+      Constructor: SQLiteStore(db_path: Path)
+
+      Advantages over filesystem:
+        - Atomic transactions (no partial writes)
+        - Efficient querying (memory by category, evals by CLI type)
+        - Single file to backup/restore
+        - Concurrent access safe (with WAL mode)
+    when_to_use: |
+      Local dev when you want transactional safety, or when
+      the PM manages state that doesn't need to be in git.
+
+  postgres:
+    description: |
+      Shared database backend. Stores Layer 1 state in Postgres.
+      Natural fit when LangGraph is already using PostgresSaver
+      for checkpoints — same infrastructure, different schema.
+
+      Constructor: PostgresStore(connection_string: str)
+
+      Advantages:
+        - Shared across PM instances (multi-PM scenarios)
+        - Full SQL querying for analytics
+        - Integrates with existing infrastructure
+        - Backups, replication, monitoring for free
+    when_to_use: |
+      Hosted/production PM, multi-project setups, teams.
+
+  git_api:
+    description: |
+      Remote backend that accesses project state via GitHub API
+      (or GitLab, Bitbucket). No local clone required.
+
+      Constructor: GitApiStore(owner: str, repo: str, token: str)
+
+      Reads: GET /repos/{owner}/{repo}/contents/{path}
+      Writes: PUT /repos/{owner}/{repo}/contents/{path} (creates commits)
+
+      Limitations:
+        - Slow (HTTP per operation)
+        - Rate limited
+        - Not suitable for frequent writes (memory, threads)
+
+      Best used as a hybrid: GitApiStore for roadmap/specs/config
+      (infrequent reads), with a local/DB store for memory/threads.
+    when_to_use: |
+      Hosted PM that doesn't need a local clone. Often combined
+      with a database backend for mutable state.
+
+# ---------------------------------------------------------------------------
+# Projections
+# ---------------------------------------------------------------------------
+#
+# Projections sync project state to external systems. They are
+# OPTIONAL, DECLARATIVE, and BIDIRECTIONAL.
+#
+# A projection is NOT a webhook handler or integration adapter.
+# It's a mapping between domain state and an external representation.
+#
+# The store fires domain events on writes. Projections subscribe
+# to events and sync state accordingly.
+
+projections:
+  description: |
+    Projections are declarative mappings between ProjectStore state
+    and external systems. They answer: "When X changes in the store,
+    what should change in the external system? And vice versa."
+
+    Projections are:
+    - Optional: a project works fine without any projections
+    - Declarative: configured in .pm/config.yaml, not code
+    - Bidirectional: external changes flow back into the store
+    - Eventually consistent: not transactional with the store
+    - Idempotent: safe to replay (handles duplicates)
+
+  domain_events:
+    description: |
+      Events emitted by the store on writes. Projections subscribe
+      to these to know when to sync. This is NOT an event bus for
+      the whole system — it's scoped to Layer 1 state changes.
+    events:
+      - roadmap_updated:
+          payload: Roadmap
+          when: "PlanManager advances a milestone or capability"
+      - milestone_completed:
+          payload: {milestone_id: string, milestone: Milestone}
+          when: "A milestone transitions to complete"
+      - capability_advanced:
+          payload: {capability_id: string, status: CapabilityStatus}
+          when: "A capability's status changes"
+      - memory_appended:
+          payload: MemoryEntry
+          when: "A new memory entry is written"
+      - eval_recorded:
+          payload: EvalSnapshot
+          when: "An eval run is recorded"
+      - workflow_updated:
+          payload: Workflow
+          when: "The workflow definition changes"
+      - thread_state_changed:
+          payload: {thread_id: string, status: string}
+          when: "A workflow thread starts, completes, or goes stale"
+
+  examples:
+
+    github_issues:
+      description: |
+        Bidirectional sync between capabilities and GitHub Issues.
+
+        Store → GitHub:
+          capability_advanced(in_progress) → Create/update issue, add label
+          milestone_completed → Close milestone's issues, add comment
+          thread_state_changed(complete) → Comment on issue with results
+
+        GitHub → Store:
+          Issue closed → Advance capability to complete (with validation)
+          Issue comment → Append to memory as stakeholder_preference
+          Issue labeled → Update capability metadata
+      config_example: |
+        projections:
+          - type: github_issues
+            owner: slusset
+            repo: agent-orchestrator
+            mapping:
+              milestones: github_milestones    # plan milestones ↔ GH milestones
+              capabilities: github_issues      # capabilities ↔ GH issues
+              labels:
+                in_progress: "status:active"
+                complete: "status:done"
+            sync_direction: bidirectional
+            on_conflict: store_wins            # or: external_wins, ask_stakeholder
+
+    jira:
+      description: |
+        Bidirectional sync between milestones/capabilities and JIRA.
+
+        Store → JIRA:
+          milestone(in_progress) → Create/update Epic
+          capability(in_progress) → Create/update Story under Epic
+          milestone_completed → Transition Epic to Done
+          thread_state_changed → Add comment to Story
+
+        JIRA → Store:
+          Story moved to Done → Advance capability
+          Epic re-prioritized → Reorder milestones (advisory)
+          Comment added → Append to memory
+      config_example: |
+        projections:
+          - type: jira
+            base_url: https://company.atlassian.net
+            project_key: AO
+            mapping:
+              milestones: jira_epics
+              capabilities: jira_stories
+              workflow_steps: jira_subtasks
+            credentials: JIRA_TOKEN
+            sync_direction: bidirectional
+
+    confluence:
+      description: |
+        One-way projection of project status to Confluence pages.
+
+        Store → Confluence:
+          roadmap_updated → Update status page with milestone table
+          eval_recorded → Append to eval trends page
+          milestone_completed → Update changelog page
+      config_example: |
+        projections:
+          - type: confluence
+            base_url: https://company.atlassian.net/wiki
+            space_key: ENG
+            pages:
+              status: "Agent Orchestrator Status"
+              eval_trends: "Agent Orchestrator Eval Trends"
+            credentials: CONFLUENCE_TOKEN
+            sync_direction: store_to_external
+
+    dashboard:
+      description: |
+        Metrics projection for monitoring and analytics.
+
+        Store → Dashboard:
+          eval_recorded → Push metrics (pass_rate, duration, by_cli)
+          capability_advanced → Update burndown/burnup
+          memory_appended → Increment learning counter
+      config_example: |
+        projections:
+          - type: metrics
+            endpoint: https://metrics.internal/api/v1/push
+            prefix: "agent_orchestrator"
+            credentials: METRICS_TOKEN
+
+# ---------------------------------------------------------------------------
+# Sync Protocol
+# ---------------------------------------------------------------------------
+
+sync_protocol:
+  description: |
+    How bidirectional projections resolve conflicts and maintain
+    consistency. This is eventually consistent — not ACID.
+
+  principles:
+    - name: "Store is source of truth"
+      description: |
+        On conflict, the store wins by default. External systems
+        are views/projections, not co-equal sources. A project can
+        override this per-projection (on_conflict: external_wins).
+
+    - name: "Idempotent sync"
+      description: |
+        Every sync operation is safe to replay. The projection
+        tracks a sync cursor (last_synced_at, last_event_id)
+        and can resume from any point.
+
+    - name: "Conflict detection via version"
+      description: |
+        Each domain entity has an updated_at timestamp. The
+        projection stores the last-seen version. If both sides
+        changed since last sync, it's a conflict.
+
+    - name: "External changes are proposals"
+      description: |
+        When an external system changes (JIRA ticket closed),
+        the projection does NOT directly mutate the store. It
+        submits a proposal: "JIRA says capability X is done."
+        The store validates (are dependencies met?) before applying.
+
+  conflict_strategies:
+    store_wins: "Store value overwrites external. Simple, safe."
+    external_wins: "External value overwrites store. Dangerous but useful for JIRA-driven teams."
+    ask_stakeholder: "Flag conflict, pause sync, ask human. Safest for critical state."
+    merge: "Attempt automatic merge (append comments, union labels). Best-effort."
+
+# ---------------------------------------------------------------------------
+# Relationship to PlanManager and Other Tools
+# ---------------------------------------------------------------------------
+#
+# PlanManager, MemoryWriter, EvalRecorder, etc. do NOT bypass the store.
+# They ARE the domain logic layer that sits ON TOP of the store:
+#
+#   PM Decision Node
+#       │
+#       ▼
+#   PlanManager / MemoryWriter / EvalRecorder   (domain logic + validation)
+#       │
+#       ▼
+#   ProjectStore                                 (persistence + events)
+#       │
+#       ├──→ Backend (filesystem / sqlite / postgres)
+#       │
+#       └──→ Projections (GitHub / JIRA / Confluence / metrics)
+#
+# PlanManager currently takes a file path and reads YAML directly.
+# After this refactor:
+#
+#   Before: pm = PlanManager("plan/roadmap.yaml")
+#   After:  pm = PlanManager(store)     # store handles persistence
+#
+# PlanManager still owns validation, transitions, and invariants.
+# The store owns serialization, storage, and event emission.
+
+# ---------------------------------------------------------------------------
+# Pre-conditions (what replaces "repo_root as working dir")
+# ---------------------------------------------------------------------------
+
+pre_conditions:
+  description: |
+    The PM does NOT assume it runs in the project repo. Instead,
+    it requires a configured ProjectStore instance. The store
+    encapsulates all knowledge of where state lives.
+
+  initialization:
+    - name: "From repo path (local dev)"
+      code: |
+        store = FileSystemStore(Path("/Users/ted/Projects/agent-orchestrator"))
+        pm_service = PMService(store)
+    - name: "From database (hosted)"
+      code: |
+        store = PostgresStore("postgresql://localhost/agent_orchestrator")
+        pm_service = PMService(store)
+    - name: "From config file"
+      code: |
+        store = ProjectStore.from_config(".pm/store-config.yaml")
+        pm_service = PMService(store)
+    - name: "Hybrid (specs from git, mutable state in DB)"
+      code: |
+        spec_store = GitApiStore(owner="slusset", repo="agent-orchestrator")
+        state_store = PostgresStore("postgresql://localhost/ao")
+        store = CompositeStore(
+            specs=spec_store,        # Read-only: roadmap, specs, config
+            state=state_store,       # Read-write: memory, threads, eval history
+        )
+        pm_service = PMService(store)
+
+rules:
+  - id: store-is-domain-typed
+    description: |
+      The store exposes domain methods (read_roadmap, append_memory),
+      not raw file operations (read_file, write_file). This ensures
+      backends can optimize storage and projections can react to
+      meaningful events, not arbitrary byte changes.
+    enforced: architecture
+
+  - id: projections-are-optional
+    description: |
+      A project works fully without any projections configured.
+      Projections are additive — they enhance visibility but are
+      not required for the PM to function.
+    enforced: architecture
+
+  - id: projections-are-eventually-consistent
+    description: |
+      Projections are NOT transactional with the store. A store
+      write succeeds even if a projection fails. Failed projections
+      are retried asynchronously.
+    enforced: architecture
+
+  - id: external-changes-are-proposals
+    description: |
+      Changes from external systems (JIRA ticket closed, GitHub issue
+      labeled) are submitted as proposals. The store validates domain
+      invariants before applying them. This prevents external systems
+      from putting the store in an invalid state.
+    enforced: domain
+
+  - id: store-emits-domain-events
+    description: |
+      Every write to the store emits a domain event. Projections
+      subscribe to events. This decouples storage from synchronization.
+    enforced: architecture
+
+  - id: no-working-directory-assumption
+    description: |
+      The PM never uses os.getcwd() or relative paths to find project
+      state. All access goes through the ProjectStore, which is
+      explicitly constructed with a locator (path, connection string,
+      repo coordinates).
+    enforced: architecture

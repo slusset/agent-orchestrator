@@ -49,30 +49,42 @@ identity:
   example: "agent-orchestrator"
 
 attributes:
-  repo_root:
-    type: path
+  store:
+    type: ProjectStore
     required: true
-    description: "Absolute path to the project repository root"
-    example: "/Users/ted/Projects/agent-orchestrator"
+    description: |
+      The persistence layer for all project state. Abstracts WHERE
+      state lives (filesystem, database, git API, hybrid) so the PM
+      never assumes local filesystem access.
+
+      The store is explicitly constructed with a locator — a path,
+      connection string, or repo coordinates. The PM never uses
+      os.getcwd() or relative paths.
+
+      See: project-store.model.yaml for the full interface.
+    examples:
+      - "FileSystemStore(Path('/Users/ted/Projects/agent-orchestrator'))"
+      - "PostgresStore('postgresql://localhost/agent_orchestrator')"
+      - "CompositeStore(specs=GitApiStore(...), state=PostgresStore(...))"
 
   # --- Strategic Plan ---
-  roadmap_path:
-    type: path
+  roadmap:
+    type: Roadmap
     required: true
-    default: "plan/roadmap.yaml"
+    loaded_from: "store.read_roadmap()"
     description: |
-      Path to the project roadmap (relative to repo_root).
+      The project roadmap, loaded from the store at boot.
       Managed exclusively through PlanManager — never edited directly.
       Contains milestones, capabilities, dependencies, and status.
 
   # --- IDD Specs ---
-  specs_path:
-    type: path
-    required: true
-    default: "specs/"
+  specs:
+    type: list[SpecRef]
+    required: false
+    loaded_from: "store.list_specs()"
     description: |
-      Root directory for IDD artifacts: personas, journeys, stories,
-      features, models, capabilities. The traceability chain lives here.
+      References to IDD spec artifacts. The PM reads specs for
+      context but never writes them (that's the coding agent's domain).
 
   # --- PM Memory ---
   memory:
