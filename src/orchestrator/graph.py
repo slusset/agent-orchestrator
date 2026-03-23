@@ -37,6 +37,12 @@ logger = logging.getLogger(__name__)
 llm = ChatAnthropic(model="claude-sonnet-4-6", max_tokens=16000)
 
 
+def _resolved_env_for_role(context: dict[str, Any], role: str) -> dict[str, str]:
+    """Extract resolved credentials from graph context, filtered by role."""
+    all_creds: dict[str, dict[str, str]] = context.get("_resolved_credentials", {})
+    return dict(all_creds.get(role, {}))
+
+
 # ---------------------------------------------------------------------------
 # Graph Nodes
 # ---------------------------------------------------------------------------
@@ -119,6 +125,7 @@ def dispatch_coding(state: OrchestratorState) -> dict[str, Any]:
         draft_pr=True,
         protected_paths=story.get("protected_paths", []),
         focus_paths=story.get("focus_paths", []),
+        resolved_env=_resolved_env_for_role(context, "coding"),
     )
 
     task_record = TaskRecord(
@@ -306,6 +313,7 @@ def dispatch_pr_review(state: OrchestratorState) -> dict[str, Any]:
         action=PRAction.REVIEW,
         acceptance_criteria=coding_task["bundle"].get("acceptance_criteria", []),
         parent_task_id=coding_task["task_id"],
+        resolved_env=_resolved_env_for_role(context, "pr"),
     )
 
     task_record = TaskRecord(
@@ -341,6 +349,7 @@ def dispatch_uat(state: OrchestratorState) -> dict[str, Any]:
         user_stories=[story.get("story_id", "")] if story.get("story_id") else [],
         acceptance_criteria=story.get("acceptance_criteria", []),
         parent_task_id=coding_task["task_id"] if coding_task else None,
+        resolved_env=_resolved_env_for_role(context, "uat"),
     )
 
     task_record = TaskRecord(
@@ -370,6 +379,7 @@ def dispatch_devops(state: OrchestratorState) -> dict[str, Any]:
         repo_url=story.get("repo_url", ""),
         action=DeployAction.DEPLOY,
         target_environment=DeployEnvironment.STAGING,
+        resolved_env=_resolved_env_for_role(context, "devops"),
     )
 
     task_record = TaskRecord(

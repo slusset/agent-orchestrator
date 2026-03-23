@@ -22,12 +22,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command, interrupt
 
+from src.contracts.credentials import (
+    CredentialManifest,
+    CredentialProvider,
+    EnvCredentialProvider,
+    ResolutionResult,
+    load_credential_manifest,
+    validate_credentials,
+)
 from src.contracts.task_bundle import TaskResult, TaskStatus
 from src.orchestrator.callback_handler import CallbackHandler
 from src.orchestrator.dispatcher import AgentDispatcher
@@ -35,6 +44,8 @@ from src.orchestrator.graph import build_orchestrator_graph
 from src.orchestrator.state import OrchestratorState, TaskRecord
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MANIFEST_PATH = ".pm/credentials.yaml"
 
 
 class OrchestratorServer:
@@ -54,15 +65,73 @@ class OrchestratorServer:
         await server.handle_agent_callback(thread_id, result_payload)
     """
 
-    def __init__(self, transport: str = "log") -> None:
+    def __init__(
+        self,
+        transport: str = "log",
+        credential_provider: CredentialProvider | None = None,
+        manifest_path: str | Path | None = None,
+    ) -> None:
         graph_builder = build_orchestrator_graph()
         self.checkpointer = MemorySaver()
         self.graph = graph_builder.compile(checkpointer=self.checkpointer)
         self.dispatcher = AgentDispatcher(transport=transport)
         self.callback_handler = CallbackHandler()
 
+        # Credential resolution
+        self.credential_provider = credential_provider or EnvCredentialProvider()
+        self._manifest: CredentialManifest | None = None
+        self._resolved: ResolutionResult | None = None
+        self._manifest_path = Path(manifest_path) if manifest_path else Path(DEFAULT_MANIFEST_PATH)
+
         # Track which thread_id each task_id belongs to
         self._task_to_thread: dict[str, str] = {}
+
+    async def boot(self) -> ResolutionResult | None:
+        """
+        Boot-time initialization: load credential manifest and validate.
+
+        Call this after construction, before accepting work.
+        Returns the ResolutionResult, or None if no manifest found.
+        """
+        try:
+            self._manifest = load_credential_manifest(self._manifest_path)
+        except FileNotFoundError:
+            logger.info("No credential manifest at %s — skipping validation", self._manifest_path)
+            return None
+
+        self._resolved = await validate_credentials(
+            self._manifest, self.credential_provider
+        )
+
+        if not self._resolved.ok:
+            logger.warning(
+                "Boot credential check: %s — some agent dispatches may fail",
+                self._resolved.summary(),
+            )
+
+        return self._resolved
+
+    def get_resolved_env(self, role: str | None = None) -> dict[str, str]:
+        """
+        Get resolved credentials as an env dict, optionally filtered by role.
+
+        If boot() hasn't been called or no manifest exists, returns empty dict.
+        """
+        if self._resolved is None:
+            return {}
+
+        if role is None or self._manifest is None:
+            return self._resolved.as_env()
+
+        # Filter to only credentials relevant to this role
+        role_cred_names = {
+            spec.name for spec in self._manifest.for_role(role)
+        }
+        return {
+            name: cred.value
+            for name, cred in self._resolved.resolved.items()
+            if name in role_cred_names
+        }
 
     async def start_story(
         self,
@@ -82,11 +151,20 @@ class OrchestratorServer:
         thread_id = thread_id or uuid4().hex[:12]
         config = {"configurable": {"thread_id": thread_id}}
 
+        # Inject per-role resolved credentials into context for dispatch nodes.
+        # Stored as plain dicts so they survive LangGraph serialization.
+        effective_context = dict(context or {})
+        if self._resolved and self._manifest:
+            role_envs: dict[str, dict[str, str]] = {}
+            for role in ("coding", "pr", "uat", "devops"):
+                role_envs[role] = self.get_resolved_env(role)
+            effective_context["_resolved_credentials"] = role_envs
+
         initial_state: dict[str, Any] = {
             "messages": [{"role": "user", "content": message}],
             "tasks": [],
             "current_story": story or {},
-            "context": context or {},
+            "context": effective_context,
         }
 
         logger.info("Starting story on thread %s: %s", thread_id, message[:80])

@@ -317,3 +317,50 @@ async def validate_credentials(
         logger.warning("Credential validation failed: %s", result.summary())
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Manifest loading
+# ---------------------------------------------------------------------------
+
+
+def load_credential_manifest(path: str | os.PathLike[str]) -> CredentialManifest:
+    """
+    Load a CredentialManifest from a YAML file.
+
+    Expected format:
+        credentials:
+          - name: ANTHROPIC_API_KEY
+            required: true
+            source: env
+            ...
+
+    Args:
+        path: Path to credentials.yaml (typically .pm/credentials.yaml)
+
+    Returns:
+        Parsed CredentialManifest
+
+    Raises:
+        FileNotFoundError: If the manifest file doesn't exist
+        ValueError: If the YAML is malformed
+    """
+    import yaml
+    from pathlib import Path
+
+    manifest_path = Path(path)
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Credential manifest not found: {manifest_path}")
+
+    with manifest_path.open() as f:
+        data = yaml.safe_load(f) or {}
+
+    if not isinstance(data, dict) or "credentials" not in data:
+        raise ValueError(
+            f"Invalid credential manifest at {manifest_path}: "
+            "expected a 'credentials' key"
+        )
+
+    return CredentialManifest(credentials=[
+        CredentialSpec(**entry) for entry in data["credentials"]
+    ])
