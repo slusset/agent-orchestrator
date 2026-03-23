@@ -1,0 +1,205 @@
+id: project-context-lifecycle
+type: lifecycle
+entity: ProjectContext
+description: |
+  The PM's lifecycle relative to a project. This defines what happens
+  when a PM is assigned to a project, how it maintains continuity,
+  and how it recovers from interruptions.
+
+# ---------------------------------------------------------------------------
+# PM Instance Lifecycle
+# ---------------------------------------------------------------------------
+#
+# A PM instance is NOT the project. It's a process that loads a project's
+# context and manages its workflows. Multiple PM instances can work on
+# the same project (serially — not concurrently for now).
+#
+#   ┌──────────────┐
+#   │   STARTING   │  Process starts, no project loaded
+#   └──────┬───────┘
+#          │ load_project(repo_root)
+#          ▼
+#   ┌──────────────┐
+#   │   LOADING    │  Reading config, roadmap, memory, eval history
+#   └──────┬───────┘
+#          │ context loaded successfully
+#          ▼
+#   ┌──────────────┐
+#   │  RECOVERING  │  Checking for interrupted workflows
+#   └──────┬───────┘
+#          │ recovery complete (or no threads to recover)
+#          ▼
+#   ┌──────────────┐
+#   │    READY     │  Accepting stories, callbacks, triggers
+#   └──────┬───────┘
+#          │ trigger arrives
+#          ▼
+#   ┌──────────────┐
+#   │   WORKING    │  Graph executing (plan_work, dispatch, evaluate)
+#   └──────┬───────┘
+#          │ graph interrupted (waiting for agent)
+#          ▼
+#   ┌──────────────┐
+#   │   WAITING    │  Graph paused at interrupt, agents working
+#   └──────┬───────┘
+#          │ callback arrives
+#          ▼
+#   ┌──────────────┐
+#   │   WORKING    │  Graph resumed, evaluating result
+#   └──────┬───────┘
+#          │ ...cycles until story complete or failed
+#          ▼
+#   ┌──────────────┐
+#   │    READY     │  Back to accepting new work
+#   └──────────────┘
+
+states:
+  starting:
+    description: "PM process started, no project context loaded"
+    entry_actions: []
+    allowed_transitions: [loading]
+
+  loading:
+    description: "Reading project context from disk"
+    entry_actions:
+      - read_config        # .pm/config.yaml
+      - read_roadmap       # plan/roadmap.yaml
+      - read_memory        # .pm/memory/entries.jsonl
+      - read_eval_history  # .pm/eval-history/*.json
+    allowed_transitions: [recovering, error]
+
+  recovering:
+    description: "Checking for interrupted workflows from previous session"
+    entry_actions:
+      - load_active_threads     # .pm/threads/active.json
+      - query_checkpoint_store  # Check each thread's checkpoint
+      - classify_threads        # active | stale | completed
+      - handle_stale_threads    # Retry or escalate
+    allowed_transitions: [ready, error]
+
+  ready:
+    description: "PM is ready to accept work"
+    entry_actions:
+      - compose_system_prompt   # Build context for LLM decisions
+    allowed_transitions: [working]
+    triggers:
+      - start_story           # External request
+      - agent_callback        # Result from running agent
+      - external_event        # Webhook, JIRA update, etc.
+      - scheduled_check       # Timer-based watchdog
+
+  working:
+    description: "LangGraph graph is executing"
+    entry_actions: []
+    allowed_transitions: [waiting, ready, error]
+
+  waiting:
+    description: "Graph paused at interrupt, agents working"
+    entry_actions:
+      - update_thread_cache   # Write to .pm/threads/active.json
+    allowed_transitions: [working, ready]
+
+  error:
+    description: "PM encountered an unrecoverable error"
+    entry_actions:
+      - log_error
+      - notify_stakeholder
+    allowed_transitions: [loading]  # Can retry
+
+# ---------------------------------------------------------------------------
+# Trigger → Graph Activation Patterns
+# ---------------------------------------------------------------------------
+
+activation_patterns:
+  - name: "Story Request"
+    trigger: "External request (API, webhook, human)"
+    action: "start_story(message, story, context)"
+    graph_entry: "plan_work"
+    description: |
+      A stakeholder or external system requests work. The PM loads
+      project context into the graph's initial state and starts execution.
+
+  - name: "Agent Callback"
+    trigger: "POST to /callback/result from a running agent"
+    action: "handle_agent_callback(thread_id, result)"
+    graph_entry: "wait_for_agent (resumed via Command)"
+    description: |
+      An agent completes its task and reports back. The callback
+      handler looks up the thread_id and resumes the graph.
+
+  - name: "Watchdog Timer"
+    trigger: "Scheduled check (cron or periodic)"
+    action: "check_stale_threads()"
+    graph_entry: "N/A (side-channel, may escalate or retry)"
+    description: |
+      A periodic check for threads that have been waiting too long.
+      If an agent has been silent past its timeout, the watchdog
+      can: send a status query, retry the task, or escalate.
+
+  - name: "External Event"
+    trigger: "GitHub webhook, JIRA update, Slack message"
+    action: "Depends on event type"
+    graph_entry: "May start_story() or provide info to existing thread"
+    description: |
+      External system events can trigger new work or provide
+      context to in-flight stories (e.g., "PR was merged" or
+      "stakeholder left a comment on JIRA").
+
+# ---------------------------------------------------------------------------
+# Recovery Patterns
+# ---------------------------------------------------------------------------
+
+recovery:
+  description: |
+    When the PM restarts, it must recover gracefully from any state.
+    The key principle: Layer 1 (ProjectContext) is always available.
+    Layer 2 (checkpoints) is available if PostgresSaver is configured.
+    Layer 3 (runtime) must be reconstructed.
+
+  scenarios:
+    - name: "Clean start (no prior work)"
+      condition: "No active threads, no checkpoints"
+      action: "Load context → ready. Nothing to recover."
+
+    - name: "Restart with agents still running"
+      condition: "Active threads exist, agents haven't called back yet"
+      action: |
+        Load active threads → query checkpoint store for each →
+        re-register task_to_thread mappings → restart callback server →
+        agents will call back when done.
+
+    - name: "Restart after agent completed while PM was down"
+      condition: "Agent POSTed result but PM wasn't running"
+      action: |
+        This is the hardest case. Options:
+        1. Agent retries callback (if agent has retry logic)
+        2. PM queries agent's status endpoint at boot
+        3. PM checks external signals (PR was created = agent succeeded)
+        4. PM marks thread as stale and re-dispatches
+
+    - name: "Restart with MemorySaver (checkpoints lost)"
+      condition: "Using in-memory checkpointer, all threads lost"
+      action: |
+        Project context (Layer 1) is intact. PM can resume from
+        strategic state: check roadmap for what was in_progress,
+        check for PRs/artifacts that indicate completed work,
+        re-plan from current state.
+
+# ---------------------------------------------------------------------------
+# PM Per Project vs Shared PM
+# ---------------------------------------------------------------------------
+#
+# Design decision: ProjectContext is the unit of continuity, not the PM.
+#
+# This means:
+#   - A dedicated PM per project: loads one ProjectContext, simple
+#   - A shared PM: loads/unloads ProjectContexts, needs context switching
+#   - A PM pool: each PM has affinity to a project but can failover
+#
+# For now: one PM per project (simplest). The architecture supports
+# all three because ProjectContext is self-contained — any PM instance
+# can pick it up and understand the project fully.
+#
+# Future: when we need multi-project, add a ProjectRegistry that the
+# PM consults to find and load projects. The ProjectContext model
+# doesn't change.

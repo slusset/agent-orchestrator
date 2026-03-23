@@ -1,0 +1,38 @@
+aggregate: ProjectContext
+root: ProjectContext
+description: |
+  The ProjectContext aggregate represents the durable knowledge state of a
+  managed project. It is the PA's continuity boundary — everything the PM
+  needs to understand a project's current state, history, and learned
+  preferences across restarts, sessions, and PM instances.
+
+  ProjectContext is NOT workflow state (that's LangGraph checkpoints) and
+  NOT runtime state (that's process-ephemeral). It's the knowledge layer
+  that feeds INTO the workflow at decision points.
+
+  The PM loads ProjectContext at boot and at key decision nodes (plan_work,
+  evaluate_result). It never modifies it during graph execution — mutations
+  happen through dedicated tools (PlanManager, MemoryWriter, EvalRecorder).
+
+entities:
+  - ProjectContext (root)
+
+value_objects:
+  - ProjectId
+  - ProjectConfig
+  - AgentPreferences
+  - EvalSnapshot
+  - MemoryEntry
+
+invariants:
+  - A project must have a roadmap (plan/roadmap.yaml)
+  - A project must have a repo root (the directory containing .pm/)
+  - Config values must have valid agent CLI types from the registry
+  - Memory entries are append-only (can be superseded but not deleted)
+  - Eval history is immutable once recorded
+
+boundaries:
+  - Roadmap is referenced, not embedded (managed by PlanManager)
+  - IDD specs are referenced by path, not embedded
+  - LangGraph checkpoints are a separate concern (workflow state)
+  - Secrets/credentials are never stored in ProjectContext

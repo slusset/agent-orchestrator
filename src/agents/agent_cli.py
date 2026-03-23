@@ -248,23 +248,45 @@ class ClaudeCodeCLI(AgentCLI):
         return args
 
     def _parse_output(self, stdout: str, stderr: str, exit_code: int) -> CLIResponse:
-        """Parse Claude Code JSON output."""
+        """Parse Claude Code JSON output.
+
+        Claude Code with --output-format json emits the same JSON to
+        both stdout and stderr.  We try stdout first, then fall back
+        to stderr if stdout is empty or not valid JSON.
+        """
+        raw = stdout or stderr  # Prefer stdout, fall back to stderr
+
         response = CLIResponse(
             success=exit_code == 0,
-            output=stdout,
+            output=raw,
             exit_code=exit_code,
-            error=stderr if exit_code != 0 else "",
+            error="",
         )
 
         # Try to parse structured JSON output
         try:
-            data = json.loads(stdout)
+            data = json.loads(raw)
             response.metadata = data
-            # Claude Code JSON has a "result" field with the final message
+
             if isinstance(data, dict):
-                response.output = data.get("result", stdout)
+                # Claude Code JSON has a "result" field with the final message
+                response.output = data.get("result", raw)
+
+                # Check for error signals in the JSON itself
+                if data.get("is_error"):
+                    response.success = False
+                    response.error = data.get("result", "Unknown error")
+                elif data.get("subtype") == "error_max_turns":
+                    response.success = False
+                    response.error = "Hit max turns limit"
+                elif data.get("subtype", "").startswith("error"):
+                    response.success = False
+                    response.error = data.get("result", f"Error subtype: {data['subtype']}")
+
         except (json.JSONDecodeError, TypeError):
-            pass  # Non-JSON output — keep raw stdout
+            # Non-JSON output — keep raw and use stderr for errors
+            if exit_code != 0:
+                response.error = stderr or stdout or "CLI failed with no output"
 
         return response
 

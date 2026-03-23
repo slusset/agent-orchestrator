@@ -274,12 +274,12 @@ class EvalRunner:
 
             if not cli_response.success:
                 logger.warning(
-                    "[eval] %s × %s: CLI agent failed: %s",
-                    task.task_id, cli_type, cli_response.error[:200],
+                    "[eval] %s × %s: CLI agent reported failure (exit_code=%d): %s",
+                    task.task_id, cli_type, cli_response.exit_code,
+                    cli_response.error[:200] or cli_response.output[:200],
                 )
-                result.error = f"CLI failed: {cli_response.error[:500]}"
-                result.passed = False
-                return result
+                # Don't return early — the agent may have partially succeeded.
+                # We still run verification tests to grade the result.
 
             # Step 5: Check what files changed
             try:
@@ -300,7 +300,17 @@ class EvalRunner:
                 logger.info("[eval] %s × %s: ✓ PASSED", task.task_id, cli_type)
             else:
                 logger.info("[eval] %s × %s: ✗ FAILED", task.task_id, cli_type)
-                result.error = f"Tests still failing after agent work"
+                if not cli_response.success:
+                    result.error = (
+                        f"CLI failed (exit_code={cli_response.exit_code}): "
+                        f"{cli_response.error[:300] or cli_response.output[:300]}"
+                    )
+                else:
+                    result.error = "Tests still failing after agent work"
+                logger.debug(
+                    "[eval] %s × %s: test output:\n%s",
+                    task.task_id, cli_type, verify.stdout[:2000],
+                )
 
         except Exception as e:
             logger.error("[eval] %s × %s: Error: %s", task.task_id, cli_type, e)

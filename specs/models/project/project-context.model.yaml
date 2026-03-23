@@ -1,0 +1,321 @@
+id: project-context
+type: model
+entity: ProjectContext
+aggregate: ProjectContext
+description: |
+  The durable knowledge state of a managed project. This is the PM's
+  continuity boundary — the persistent context that survives restarts,
+  session breaks, and PM instance changes.
+
+  ProjectContext answers: "What do I know about this project right now?"
+  LangGraph checkpoints answer: "Where am I in this story's workflow?"
+  These are distinct concerns with distinct lifecycles.
+
+sources:
+  journeys:
+    - specs/journeys/feature-request-lifecycle.md
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+
+# ---------------------------------------------------------------------------
+# State Layers (conceptual — not all stored in this entity)
+# ---------------------------------------------------------------------------
+#
+#   Layer 1: Project Knowledge (this entity — durable, in repo)
+#     Strategic plan, IDD specs, eval history, PM memory, config
+#     Survives: restarts, redeployments, PM instance changes
+#     Mutated by: PlanManager, MemoryWriter, EvalRecorder
+#
+#   Layer 2: Workflow State (LangGraph checkpoints — durable, in DB)
+#     Graph position, in-flight tasks, pending results
+#     Survives: restarts (with PostgresSaver)
+#     Mutated by: graph execution only
+#
+#   Layer 3: Runtime Ephemeral (process memory — volatile)
+#     Running asyncio tasks, task-to-thread mappings
+#     Survives: nothing (reconstructed from Layer 2 at boot)
+#     Mutated by: dispatcher, callback handler
+#
+# ProjectContext is Layer 1. It feeds into Layer 2 at decision points
+# but never depends on it. A PM can load a ProjectContext without any
+# active workflows and still understand the project fully.
+# ---------------------------------------------------------------------------
+
+identity:
+  field: project_id
+  type: string
+  format: kebab-case
+  description: "Unique project identifier, typically the repo name"
+  example: "agent-orchestrator"
+
+attributes:
+  repo_root:
+    type: path
+    required: true
+    description: "Absolute path to the project repository root"
+    example: "/Users/ted/Projects/agent-orchestrator"
+
+  # --- Strategic Plan ---
+  roadmap_path:
+    type: path
+    required: true
+    default: "plan/roadmap.yaml"
+    description: |
+      Path to the project roadmap (relative to repo_root).
+      Managed exclusively through PlanManager — never edited directly.
+      Contains milestones, capabilities, dependencies, and status.
+
+  # --- IDD Specs ---
+  specs_path:
+    type: path
+    required: true
+    default: "specs/"
+    description: |
+      Root directory for IDD artifacts: personas, journeys, stories,
+      features, models, capabilities. The traceability chain lives here.
+
+  # --- PM Memory ---
+  memory:
+    type: list
+    items: MemoryEntry
+    description: |
+      Append-only knowledge the PM has learned about this project.
+      Not a chat history — distilled observations and decisions.
+      Examples:
+        - "Claude Code solves CRUD tasks well but struggles with circular imports"
+        - "This repo requires --allowedTools Edit,Write for Claude Code"
+        - "Stakeholder prefers small PRs over large feature branches"
+        - "The fibonacci eval is a good canary — run it first"
+
+  # --- Agent Configuration ---
+  config:
+    type: ProjectConfig
+    required: true
+    description: |
+      Project-level defaults for agent dispatch. These are the
+      baseline settings — individual TaskBundles can override.
+
+  # --- Eval History ---
+  eval_snapshots:
+    type: list
+    items: EvalSnapshot
+    description: |
+      Historical eval results. Each snapshot records one eval suite run.
+      Used for trend analysis and self-improvement.
+
+  # --- Active Workflows ---
+  active_threads:
+    type: list
+    items: ThreadRef
+    description: |
+      References to LangGraph threads that have in-flight work.
+      Used at boot to recover interrupted workflows.
+      This is a cache — the source of truth is the checkpoint store.
+
+# ---------------------------------------------------------------------------
+# Value Objects
+# ---------------------------------------------------------------------------
+
+value_objects:
+  MemoryEntry:
+    description: "A single learned observation or decision"
+    fields:
+      content:
+        type: string
+        required: true
+        description: "The observation or decision"
+      category:
+        type: enum
+        values: [agent_performance, project_preference, stakeholder_preference, technical_insight, process_learning]
+        required: true
+      source:
+        type: string
+        description: "What triggered this learning (eval result, stakeholder feedback, task outcome)"
+      created_at:
+        type: datetime
+        required: true
+      supersedes:
+        type: string
+        description: "ID of a previous entry this replaces (soft-update pattern)"
+
+  ProjectConfig:
+    description: "Project-level defaults for agent dispatch"
+    fields:
+      default_cli:
+        type: string
+        default: "claude-code"
+        description: "Default agent CLI for coding tasks"
+      cli_configs:
+        type: map
+        description: |
+          Per-CLI configuration overrides.
+          Example: { "claude-code": { "max_turns": 20 }, "codex": { "sandbox": "workspace-write" } }
+      default_timeout_minutes:
+        type: integer
+        default: 60
+      default_branch:
+        type: string
+        default: "main"
+      protected_paths:
+        type: list
+        items: string
+        description: "Paths no agent should modify (project-wide)"
+      repo_url:
+        type: string
+        format: uri
+        description: "Remote repository URL"
+      credential_provider:
+        type: enum
+        values: [env, keychain, vault, none]
+        default: "env"
+        description: "How agents obtain secrets (tokens, API keys)"
+
+  EvalSnapshot:
+    description: "Results from one eval suite run"
+    fields:
+      run_id:
+        type: string
+        format: uuid
+      ran_at:
+        type: datetime
+      cli_type:
+        type: string
+      total:
+        type: integer
+      passed:
+        type: integer
+      pass_rate:
+        type: float
+      duration_seconds:
+        type: float
+      task_results:
+        type: list
+        description: "Per-task pass/fail with timing"
+      trigger:
+        type: enum
+        values: [manual, ci, scheduled, experiment]
+        description: "What triggered this eval run"
+
+  ThreadRef:
+    description: "Reference to a LangGraph thread with in-flight work"
+    fields:
+      thread_id:
+        type: string
+        required: true
+      story_id:
+        type: string
+      started_at:
+        type: datetime
+      last_activity:
+        type: datetime
+      status:
+        type: enum
+        values: [active, interrupted, stale, recovered]
+
+# ---------------------------------------------------------------------------
+# On-Disk Layout
+# ---------------------------------------------------------------------------
+#
+# project-repo/
+#   plan/
+#     roadmap.yaml               # Strategic plan (PlanManager)
+#   specs/                       # IDD artifacts
+#     personas/
+#     journeys/
+#     stories/
+#     features/
+#     models/
+#   .pm/                         # PM state directory
+#     config.yaml                # ProjectConfig
+#     memory/
+#       entries.jsonl             # Append-only memory log
+#     eval-history/
+#       eval-20260322-192204.json # One file per eval run
+#     threads/
+#       active.json               # ThreadRef list (cache)
+#   src/                         # Code
+#   tests/                       # Tests
+#   evals/                       # Eval framework + tasks
+
+# ---------------------------------------------------------------------------
+# Boot Sequence
+# ---------------------------------------------------------------------------
+#
+# When the PM starts up for a project:
+#
+# 1. LOAD PROJECT CONTEXT
+#    - Read .pm/config.yaml → ProjectConfig
+#    - Read plan/roadmap.yaml → current milestones, capabilities, status
+#    - Read .pm/memory/entries.jsonl → learned context
+#    - Read .pm/eval-history/ → recent trends
+#
+# 2. RECOVER WORKFLOWS (if checkpoint store available)
+#    - Read .pm/threads/active.json → list of in-flight threads
+#    - For each thread: query checkpoint store for current state
+#    - Classify: still waiting (agent running), stale (agent died), completed
+#    - Stale threads: decide whether to retry or escalate
+#
+# 3. COMPOSE PM SYSTEM PROMPT
+#    - Inject: roadmap summary, active capabilities, recent eval results
+#    - Inject: memory entries relevant to current work
+#    - Inject: in-flight work summary
+#    - This becomes the context for plan_work and evaluate_result nodes
+#
+# 4. READY
+#    - PM is now ready to receive start_story() calls
+#    - Or resume interrupted threads via handle_agent_callback()
+#    - Or handle external triggers (webhooks, cron, human input)
+
+# ---------------------------------------------------------------------------
+# Relationship to LangGraph
+# ---------------------------------------------------------------------------
+#
+# ProjectContext and LangGraph checkpoints are complementary:
+#
+#   ProjectContext (Layer 1)        LangGraph Checkpoint (Layer 2)
+#   ─────────────────────────       ────────────────────────────────
+#   "What do we know?"              "Where are we in this workflow?"
+#   Project-scoped                  Thread-scoped (per story)
+#   Version-controlled (repo)       Database (PostgresSaver)
+#   Read at decision nodes          Written by graph execution
+#   Mutated by tools                Mutated by graph framework
+#   Survives everything             Survives restarts (with Postgres)
+#
+# The graph reads ProjectContext at:
+#   - plan_work: "Given our roadmap and history, what should we do?"
+#   - evaluate_result: "Given what we know, is this result acceptable?"
+#
+# The graph NEVER writes to ProjectContext. After execution,
+# separate tools record results:
+#   - PlanManager: advance capabilities after successful delivery
+#   - MemoryWriter: record observations after task completion
+#   - EvalRecorder: save eval results after eval runs
+
+rules:
+  - id: project-context-is-read-only-in-graph
+    description: |
+      The LangGraph graph reads ProjectContext at decision nodes
+      but never modifies it during execution. All mutations happen
+      through dedicated tools after graph execution completes.
+    enforced: convention
+
+  - id: memory-is-append-only
+    description: |
+      Memory entries are never deleted. They can be superseded by
+      newer entries (via the supersedes field) but the history is
+      preserved for auditability.
+    enforced: domain
+
+  - id: secrets-never-in-project-context
+    description: |
+      Credentials, tokens, and API keys are never stored in
+      ProjectContext. The credential_provider field in ProjectConfig
+      indicates where to find them at runtime.
+    enforced: convention
+
+  - id: checkpoint-store-is-separate
+    description: |
+      LangGraph checkpoint data is stored in a database (PostgresSaver),
+      not in the repo. ThreadRef in ProjectContext is a cache for boot
+      recovery — the checkpoint store is the source of truth.
+    enforced: architecture

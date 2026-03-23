@@ -20,3 +20,8 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pyyaml>=6.0.3",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+collect_ignore_glob = ["evals/tasks/*/seed-repo/*"]
