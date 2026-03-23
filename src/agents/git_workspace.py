@@ -248,6 +248,20 @@ class GitWorkspace:
         self._cloned = True
         self.branch = self.base_branch
 
+        # Configure HTTPS push auth from GITHUB_TOKEN if available.
+        # Raw git doesn't read GITHUB_TOKEN — that's a gh CLI convention.
+        # We set the push URL with the token embedded, matching the pattern
+        # used by GitHub Actions and other CI systems.
+        token = os.environ.get("GITHUB_TOKEN")
+        if token and self.repo_url.startswith("https://"):
+            authed_url = self.repo_url.replace(
+                "https://", f"https://x-access-token:{token}@"
+            )
+            await self._run_git(
+                "remote", "set-url", "--push", "origin", authed_url
+            )
+            logger.debug("[git] Configured push URL with GITHUB_TOKEN auth")
+
         logger.info(
             "[git] Cloned %s (branch: %s) → %s",
             self.repo_url,
@@ -470,18 +484,41 @@ class GitWorkspace:
     # ------------------------------------------------------------------
 
     async def get_changed_files(self) -> list[str]:
-        """Get list of files changed since base branch."""
+        """Get list of files changed since base branch.
+
+        Checks committed, staged, unstaged, and untracked files —
+        the CLI agent writes files but doesn't commit or stage them.
+        """
+        files: set[str] = set()
+
+        # 1. Committed changes vs base branch
         result = await self._run_git(
             "diff", "--name-only", f"origin/{self.base_branch}...HEAD",
             check=False,
         )
         if result.success and result.stdout:
-            return result.stdout.split("\n")
-        # Fallback: diff against staging
+            files.update(result.stdout.strip().split("\n"))
+
+        # 2. Staged changes
         result = await self._run_git("diff", "--name-only", "--cached", check=False)
         if result.stdout:
-            return result.stdout.split("\n")
-        return []
+            files.update(result.stdout.strip().split("\n"))
+
+        # 3. Unstaged modifications
+        result = await self._run_git("diff", "--name-only", check=False)
+        if result.stdout:
+            files.update(result.stdout.strip().split("\n"))
+
+        # 4. Untracked files (new files the CLI agent created)
+        result = await self._run_git(
+            "ls-files", "--others", "--exclude-standard",
+            check=False,
+        )
+        if result.stdout:
+            files.update(result.stdout.strip().split("\n"))
+
+        files.discard("")
+        return sorted(files)
 
     async def get_file_content(self, path: str) -> str:
         """Read a file from the workspace."""
