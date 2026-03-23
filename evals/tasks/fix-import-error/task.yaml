@@ -1,0 +1,26 @@
+task_id: eval-fix-import-error
+name: Fix broken import in calculator module
+description: >
+  The calculator module has a circular import that prevents it from
+  loading. The test file imports Calculator but gets an ImportError.
+  The agent needs to diagnose the circular dependency and fix it.
+difficulty: easy
+tags: [python, bug-fix, imports]
+
+objective: >
+  Fix the ImportError in the calculator module. The tests import
+  Calculator from calculator.py but it fails with a circular import.
+  Diagnose the issue and fix it without changing the test expectations.
+
+acceptance_criteria:
+  - calculator module imports successfully
+  - All existing tests pass
+  - Calculator.add() and Calculator.multiply() work correctly
+
+focus_paths: [calculator.py, utils.py]
+protected_paths: [tests/]
+
+verify_command: python -m pytest tests/ -v
+test_frameworks: [pytest]
+expected_files: [calculator.py, utils.py]
+max_time_seconds: 120

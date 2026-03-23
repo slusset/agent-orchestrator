@@ -1,0 +1,30 @@
+task_id: eval-fibonacci
+name: Implement fibonacci function with memoization
+description: >
+  The math_utils module has a stub fibonacci() function. Implement it
+  with memoization so it handles large inputs efficiently. Tests cover
+  base cases, edge cases, and performance.
+difficulty: medium
+tags: [python, algorithm, create-function]
+
+objective: >
+  Implement the fibonacci() function in math_utils.py. It should:
+  - Return the nth Fibonacci number (0-indexed: fib(0)=0, fib(1)=1)
+  - Handle negative inputs by raising ValueError
+  - Use memoization or iteration for efficiency (fib(100) should be fast)
+  - Return an integer, not float
+
+acceptance_criteria:
+  - fib(0) returns 0
+  - fib(1) returns 1
+  - fib(10) returns 55
+  - fib(100) completes in under 1 second
+  - Negative input raises ValueError
+
+focus_paths: [math_utils.py]
+protected_paths: [tests/]
+
+verify_command: python -m pytest tests/ -v
+test_frameworks: [pytest]
+expected_files: [math_utils.py]
+max_time_seconds: 120

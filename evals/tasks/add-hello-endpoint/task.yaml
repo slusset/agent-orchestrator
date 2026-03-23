@@ -1,0 +1,25 @@
+task_id: eval-hello-endpoint
+name: Add a hello world endpoint
+description: >
+  Create a simple hello endpoint in an existing FastAPI app.
+  The seed repo has an empty app.py and a test that expects
+  GET /hello to return a JSON message.
+difficulty: easy
+tags: [fastapi, python, create-function]
+
+objective: >
+  Add a GET /hello endpoint to the FastAPI app in app.py that
+  returns a JSON response: {"message": "hello world"}.
+
+acceptance_criteria:
+  - GET /hello returns HTTP 200
+  - 'Response body is {"message": "hello world"}'
+  - The endpoint is defined in app.py
+
+focus_paths: [app.py]
+protected_paths: [tests/]
+
+verify_command: python -m pytest tests/ -v
+test_frameworks: [pytest]
+expected_files: [app.py]
+max_time_seconds: 120

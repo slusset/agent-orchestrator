@@ -1,0 +1,30 @@
+task_id: eval-todo-crud
+name: Add CRUD operations for a TODO list API
+description: >
+  A FastAPI app has a skeletal structure with models defined but no
+  route implementations. The agent must implement create, read, list,
+  update, and delete operations for TODO items using an in-memory store.
+difficulty: medium
+tags: [fastapi, python, crud, multi-file]
+
+objective: >
+  Implement the TODO CRUD API in routes.py using the existing models
+  from models.py. Use the in-memory store dict in store.py. The app
+  should support creating, reading, listing, updating, and deleting
+  TODO items. See the tests for exact API contract.
+
+acceptance_criteria:
+  - POST /todos creates a new TODO and returns it with an id
+  - GET /todos returns a list of all TODOs
+  - GET /todos/{id} returns a single TODO
+  - PUT /todos/{id} updates a TODO
+  - DELETE /todos/{id} deletes a TODO and returns 204
+  - GET /todos/{id} for missing ID returns 404
+
+focus_paths: [routes.py]
+protected_paths: [tests/, models.py]
+
+verify_command: python -m pytest tests/ -v
+test_frameworks: [pytest]
+expected_files: [routes.py]
+max_time_seconds: 180
