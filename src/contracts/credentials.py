@@ -22,11 +22,14 @@ Traceability:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import shutil
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -226,14 +229,220 @@ class StaticCredentialProvider(CredentialProvider):
         return self._credentials.get(spec.name) or self._credentials.get(spec.lookup_key)
 
 
+def _parse_dotenv(content: str) -> dict[str, str]:
+    """
+    Parse .env file content into a dict.
+
+    Handles:
+    - KEY=value
+    - KEY="quoted value" and KEY='quoted value'
+    - Comments (lines starting with #)
+    - Blank lines
+    - export KEY=value (bash-style)
+    - Inline comments after unquoted values
+
+    Does NOT handle multiline values or variable interpolation.
+    """
+    result: dict[str, str] = {}
+
+    for line in content.splitlines():
+        line = line.strip()
+
+        # Skip blanks and comments
+        if not line or line.startswith("#"):
+            continue
+
+        # Strip optional 'export ' prefix
+        if line.startswith("export "):
+            line = line[7:].strip()
+
+        # Must have an = sign
+        if "=" not in line:
+            continue
+
+        key, _, raw_value = line.partition("=")
+        key = key.strip()
+        raw_value = raw_value.strip()
+
+        if not key:
+            continue
+
+        # Handle quoted values
+        if len(raw_value) >= 2 and raw_value[0] == raw_value[-1] and raw_value[0] in ('"', "'"):
+            value = raw_value[1:-1]
+        else:
+            # Bare value starting with # is an inline comment (value is empty)
+            if raw_value.startswith("#"):
+                value = ""
+            elif " #" in raw_value:
+                # Strip inline comments for unquoted values
+                value = raw_value[: raw_value.index(" #")].strip()
+            else:
+                value = raw_value
+
+        result[key] = value
+
+    return result
+
+
+class DotEnvCredentialProvider(CredentialProvider):
+    """
+    Resolves credentials from a .env file.
+
+    Reads key=value pairs from a dotenv file on disk. Useful for local
+    development where secrets live in .env (gitignored) rather than
+    being exported into the shell environment.
+
+    Usage:
+        provider = DotEnvCredentialProvider(".env")
+        # or in a chain:
+        chain = ChainCredentialProvider([
+            DotEnvCredentialProvider(".env"),
+            EnvCredentialProvider(),
+        ])
+    """
+
+    name = "dotenv"
+
+    def __init__(self, path: str | Path) -> None:
+        self._path = Path(path)
+        self._cache: dict[str, str] | None = None
+
+    def _load(self) -> dict[str, str]:
+        """Load and cache the .env file contents."""
+        if self._cache is None:
+            if not self._path.exists():
+                logger.debug("DotEnv file not found: %s", self._path)
+                self._cache = {}
+            else:
+                content = self._path.read_text(encoding="utf-8")
+                self._cache = _parse_dotenv(content)
+                logger.debug(
+                    "Loaded %d entries from %s", len(self._cache), self._path
+                )
+        return self._cache
+
+    def reload(self) -> None:
+        """Clear the cache so the next get() re-reads from disk."""
+        self._cache = None
+
+    async def get(self, spec: CredentialSpec) -> str | None:
+        entries = self._load()
+        return entries.get(spec.lookup_key)
+
+
+class SopsCredentialProvider(CredentialProvider):
+    """
+    Resolves credentials from a SOPS-encrypted file.
+
+    Calls `sops --decrypt <path>` at load time, parses the decrypted
+    output as dotenv (KEY=value) format, and serves values from the
+    in-memory cache.
+
+    Supported encrypted formats:
+    - .env (dotenv format, decrypts to KEY=value lines)
+    - .yaml / .json (decrypts to structured data, parsed accordingly)
+
+    Requires `sops` CLI on PATH and the appropriate key (age, GPG, etc.)
+    configured in .sops.yaml or SOPS_AGE_KEY_FILE env var.
+
+    Usage:
+        provider = SopsCredentialProvider(".pm/secrets.env")
+        # or in a chain:
+        chain = ChainCredentialProvider([
+            SopsCredentialProvider(".pm/secrets.env"),
+            EnvCredentialProvider(),  # fallback
+        ])
+    """
+
+    name = "sops"
+
+    def __init__(self, path: str | Path, sops_binary: str = "sops") -> None:
+        self._path = Path(path)
+        self._sops_binary = sops_binary
+        self._cache: dict[str, str] | None = None
+
+    async def _decrypt(self) -> str:
+        """Run sops --decrypt and return the plaintext output."""
+        if not self._path.exists():
+            raise FileNotFoundError(f"SOPS encrypted file not found: {self._path}")
+
+        if not shutil.which(self._sops_binary):
+            raise RuntimeError(
+                f"'{self._sops_binary}' not found on PATH. "
+                "Install SOPS: https://github.com/getsops/sops"
+            )
+
+        proc = await asyncio.create_subprocess_exec(
+            self._sops_binary, "--decrypt", str(self._path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            error_msg = stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(
+                f"sops --decrypt failed (exit {proc.returncode}): {error_msg}"
+            )
+
+        return stdout.decode("utf-8")
+
+    def _parse_output(self, plaintext: str) -> dict[str, str]:
+        """Parse decrypted output based on file extension."""
+        suffix = self._path.suffix.lower()
+
+        if suffix in (".yaml", ".yml"):
+            import yaml
+
+            data = yaml.safe_load(plaintext) or {}
+            if not isinstance(data, dict):
+                raise ValueError(f"Expected dict from SOPS YAML, got {type(data).__name__}")
+            # Flatten to string values (single-level only)
+            return {k: str(v) for k, v in data.items() if v is not None}
+
+        elif suffix == ".json":
+            import json
+
+            data = json.loads(plaintext)
+            if not isinstance(data, dict):
+                raise ValueError(f"Expected dict from SOPS JSON, got {type(data).__name__}")
+            return {k: str(v) for k, v in data.items() if v is not None}
+
+        else:
+            # Default: dotenv format (.env, .txt, or anything else)
+            return _parse_dotenv(plaintext)
+
+    async def _load(self) -> dict[str, str]:
+        """Decrypt and cache the file contents."""
+        if self._cache is None:
+            plaintext = await self._decrypt()
+            self._cache = self._parse_output(plaintext)
+            logger.debug(
+                "Decrypted %d entries from %s via SOPS",
+                len(self._cache),
+                self._path,
+            )
+        return self._cache
+
+    async def reload(self) -> None:
+        """Clear cache so next get() re-decrypts from disk."""
+        self._cache = None
+
+    async def get(self, spec: CredentialSpec) -> str | None:
+        entries = await self._load()
+        return entries.get(spec.lookup_key)
+
+
 class ChainCredentialProvider(CredentialProvider):
     """
     Tries multiple providers in order, returns first match.
 
     This is how you compose providers:
         chain = ChainCredentialProvider([
-            SopsProvider(".pm/secrets.yaml.age"),  # Try encrypted file first
-            EnvProvider(),                          # Fall back to env vars
+            SopsCredentialProvider(".pm/secrets.env"),  # Try encrypted first
+            DotEnvCredentialProvider(".env"),            # Then local .env
+            EnvCredentialProvider(),                     # Fall back to env vars
         ])
 
     The chain short-circuits on first resolution per credential.

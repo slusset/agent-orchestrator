@@ -7,7 +7,9 @@ Traceability:
   Domain Model: specs/models/project/project-store.model.yaml
 """
 
+import json
 import os
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -16,10 +18,13 @@ from src.contracts.credentials import (
     CredentialManifest,
     CredentialSource,
     CredentialSpec,
+    DotEnvCredentialProvider,
     EnvCredentialProvider,
     ResolutionResult,
     ResolvedCredential,
+    SopsCredentialProvider,
     StaticCredentialProvider,
+    _parse_dotenv,
     load_credential_manifest,
     validate_credentials,
 )
@@ -577,3 +582,356 @@ class TestDispatchNodeCredentialInjection:
         result = dispatch_coding(state)
         # Should not raise — gracefully gets empty dict
         assert len(result["tasks"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# DotEnv Parser
+# ---------------------------------------------------------------------------
+
+
+class TestParseDotenv:
+    """Tests for the lightweight .env parser."""
+
+    def test_simple_key_value(self):
+        assert _parse_dotenv("KEY=value") == {"KEY": "value"}
+
+    def test_multiple_entries(self):
+        content = "A=1\nB=2\nC=3"
+        assert _parse_dotenv(content) == {"A": "1", "B": "2", "C": "3"}
+
+    def test_double_quoted(self):
+        assert _parse_dotenv('KEY="hello world"') == {"KEY": "hello world"}
+
+    def test_single_quoted(self):
+        assert _parse_dotenv("KEY='hello world'") == {"KEY": "hello world"}
+
+    def test_comments_skipped(self):
+        content = "# this is a comment\nKEY=value\n# another comment"
+        assert _parse_dotenv(content) == {"KEY": "value"}
+
+    def test_blank_lines_skipped(self):
+        content = "\n\nKEY=value\n\n"
+        assert _parse_dotenv(content) == {"KEY": "value"}
+
+    def test_export_prefix_stripped(self):
+        assert _parse_dotenv("export KEY=value") == {"KEY": "value"}
+
+    def test_inline_comment_stripped(self):
+        assert _parse_dotenv("KEY=value # this is a comment") == {"KEY": "value"}
+
+    def test_inline_comment_preserved_in_quotes(self):
+        assert _parse_dotenv('KEY="value # not a comment"') == {"KEY": "value # not a comment"}
+
+    def test_empty_value(self):
+        assert _parse_dotenv("KEY=") == {"KEY": ""}
+
+    def test_value_with_equals(self):
+        assert _parse_dotenv("KEY=a=b=c") == {"KEY": "a=b=c"}
+
+    def test_whitespace_trimmed(self):
+        assert _parse_dotenv("  KEY  =  value  ") == {"KEY": "value"}
+
+    def test_no_equals_line_skipped(self):
+        content = "not_a_valid_line\nKEY=value"
+        assert _parse_dotenv(content) == {"KEY": "value"}
+
+    def test_empty_string(self):
+        assert _parse_dotenv("") == {}
+
+    def test_realistic_env_file(self):
+        content = (
+            "# Agent Orchestrator secrets\n"
+            "ANTHROPIC_API_KEY=sk-ant-abc123\n"
+            'GITHUB_TOKEN="ghp_xxxxxxxxxxxx"\n'
+            "export OPENAI_API_KEY=sk-openai-xyz\n"
+            "\n"
+            "# Optional\n"
+            "JIRA_TOKEN=  # not set yet\n"
+        )
+        result = _parse_dotenv(content)
+        assert result["ANTHROPIC_API_KEY"] == "sk-ant-abc123"
+        assert result["GITHUB_TOKEN"] == "ghp_xxxxxxxxxxxx"
+        assert result["OPENAI_API_KEY"] == "sk-openai-xyz"
+        assert result["JIRA_TOKEN"] == ""
+
+
+# ---------------------------------------------------------------------------
+# DotEnvCredentialProvider
+# ---------------------------------------------------------------------------
+
+
+class TestDotEnvCredentialProvider:
+    """Tests for the .env file credential provider."""
+
+    @pytest.fixture
+    def env_file(self, tmp_path):
+        f = tmp_path / ".env"
+        f.write_text(
+            "ANTHROPIC_API_KEY=sk-ant-test123\n"
+            "GITHUB_TOKEN=ghp_testtoken\n"
+            "OPTIONAL_KEY=optional_value\n"
+        )
+        return f
+
+    @pytest.mark.asyncio
+    async def test_resolves_from_dotenv(self, env_file):
+        provider = DotEnvCredentialProvider(env_file)
+        spec = CredentialSpec(name="ANTHROPIC_API_KEY")
+        value = await provider.get(spec)
+        assert value == "sk-ant-test123"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_missing_key(self, env_file):
+        provider = DotEnvCredentialProvider(env_file)
+        spec = CredentialSpec(name="NONEXISTENT")
+        value = await provider.get(spec)
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_uses_lookup_key_override(self, env_file):
+        provider = DotEnvCredentialProvider(env_file)
+        spec = CredentialSpec(name="MY_TOKEN", env_var="GITHUB_TOKEN")
+        value = await provider.get(spec)
+        assert value == "ghp_testtoken"
+
+    @pytest.mark.asyncio
+    async def test_missing_file_returns_none(self, tmp_path):
+        provider = DotEnvCredentialProvider(tmp_path / "nonexistent.env")
+        spec = CredentialSpec(name="ANYTHING")
+        value = await provider.get(spec)
+        assert value is None
+
+    @pytest.mark.asyncio
+    async def test_resolve_manifest(self, env_file):
+        provider = DotEnvCredentialProvider(env_file)
+        manifest = CredentialManifest(credentials=[
+            CredentialSpec(name="ANTHROPIC_API_KEY", required=True),
+            CredentialSpec(name="GITHUB_TOKEN", required=True),
+            CredentialSpec(name="MISSING_KEY", required=False),
+        ])
+        result = await provider.resolve(manifest)
+        assert result.ok  # no required missing
+        assert "ANTHROPIC_API_KEY" in result.resolved
+        assert "GITHUB_TOKEN" in result.resolved
+        assert "MISSING_KEY" not in result.resolved
+
+    @pytest.mark.asyncio
+    async def test_caching(self, env_file):
+        provider = DotEnvCredentialProvider(env_file)
+        spec = CredentialSpec(name="ANTHROPIC_API_KEY")
+
+        # First call loads
+        await provider.get(spec)
+        assert provider._cache is not None
+
+        # Modify file — cache should still return old value
+        env_file.write_text("ANTHROPIC_API_KEY=new_value\n")
+        value = await provider.get(spec)
+        assert value == "sk-ant-test123"  # still cached
+
+        # Reload clears cache
+        provider.reload()
+        value = await provider.get(spec)
+        assert value == "new_value"
+
+    @pytest.mark.asyncio
+    async def test_in_chain_with_env(self, env_file, monkeypatch):
+        """DotEnv provider takes priority over env vars in a chain."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-environment")
+
+        chain = ChainCredentialProvider([
+            DotEnvCredentialProvider(env_file),
+            EnvCredentialProvider(),
+        ])
+        manifest = CredentialManifest(credentials=[
+            CredentialSpec(name="ANTHROPIC_API_KEY", required=True),
+        ])
+        result = await chain.resolve(manifest)
+        # DotEnv should win
+        assert result.resolved["ANTHROPIC_API_KEY"].value == "sk-ant-test123"
+        assert result.resolved["ANTHROPIC_API_KEY"].source == "dotenv"
+
+    @pytest.mark.asyncio
+    async def test_chain_falls_through_to_env(self, tmp_path, monkeypatch):
+        """If .env file doesn't have the key, chain falls through to env vars."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("OTHER_KEY=other\n")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "from-environment")
+
+        chain = ChainCredentialProvider([
+            DotEnvCredentialProvider(env_file),
+            EnvCredentialProvider(),
+        ])
+        spec = CredentialSpec(name="ANTHROPIC_API_KEY")
+        result = await chain.resolve(CredentialManifest(credentials=[spec]))
+        assert result.resolved["ANTHROPIC_API_KEY"].value == "from-environment"
+        assert result.resolved["ANTHROPIC_API_KEY"].source == "env"
+
+
+# ---------------------------------------------------------------------------
+# SopsCredentialProvider
+# ---------------------------------------------------------------------------
+
+
+class TestSopsCredentialProvider:
+    """Tests for the SOPS-encrypted credential provider."""
+
+    @pytest.mark.asyncio
+    async def test_decrypt_dotenv_format(self, tmp_path):
+        """Test SOPS provider with mocked decrypt returning dotenv format."""
+        encrypted_file = tmp_path / "secrets.env"
+        encrypted_file.write_text("(encrypted content)")
+
+        provider = SopsCredentialProvider(encrypted_file)
+
+        decrypted = "ANTHROPIC_API_KEY=sk-ant-decrypted\nGITHUB_TOKEN=ghp_decrypted\n"
+
+        with patch.object(provider, "_decrypt", new_callable=AsyncMock, return_value=decrypted):
+            spec = CredentialSpec(name="ANTHROPIC_API_KEY")
+            value = await provider.get(spec)
+            assert value == "sk-ant-decrypted"
+
+    @pytest.mark.asyncio
+    async def test_decrypt_yaml_format(self, tmp_path):
+        """Test SOPS provider with YAML encrypted file."""
+        encrypted_file = tmp_path / "secrets.yaml"
+        encrypted_file.write_text("(encrypted)")
+
+        provider = SopsCredentialProvider(encrypted_file)
+
+        decrypted_yaml = "ANTHROPIC_API_KEY: sk-ant-yaml\nGITHUB_TOKEN: ghp_yaml\n"
+
+        with patch.object(provider, "_decrypt", new_callable=AsyncMock, return_value=decrypted_yaml):
+            spec = CredentialSpec(name="GITHUB_TOKEN")
+            value = await provider.get(spec)
+            assert value == "ghp_yaml"
+
+    @pytest.mark.asyncio
+    async def test_decrypt_json_format(self, tmp_path):
+        """Test SOPS provider with JSON encrypted file."""
+        encrypted_file = tmp_path / "secrets.json"
+        encrypted_file.write_text("(encrypted)")
+
+        provider = SopsCredentialProvider(encrypted_file)
+
+        decrypted_json = json.dumps({
+            "ANTHROPIC_API_KEY": "sk-ant-json",
+            "GITHUB_TOKEN": "ghp_json",
+        })
+
+        with patch.object(provider, "_decrypt", new_callable=AsyncMock, return_value=decrypted_json):
+            spec = CredentialSpec(name="ANTHROPIC_API_KEY")
+            value = await provider.get(spec)
+            assert value == "sk-ant-json"
+
+    @pytest.mark.asyncio
+    async def test_missing_file_raises(self, tmp_path):
+        provider = SopsCredentialProvider(tmp_path / "nonexistent.env")
+        spec = CredentialSpec(name="ANYTHING")
+        with pytest.raises(FileNotFoundError, match="SOPS encrypted file not found"):
+            await provider.get(spec)
+
+    @pytest.mark.asyncio
+    async def test_sops_not_installed_raises(self, tmp_path):
+        encrypted_file = tmp_path / "secrets.env"
+        encrypted_file.write_text("(encrypted)")
+
+        provider = SopsCredentialProvider(encrypted_file, sops_binary="nonexistent_sops_binary")
+        spec = CredentialSpec(name="ANYTHING")
+        with pytest.raises(RuntimeError, match="not found on PATH"):
+            await provider.get(spec)
+
+    @pytest.mark.asyncio
+    async def test_sops_decrypt_failure(self, tmp_path):
+        """Test that sops CLI errors are propagated."""
+        encrypted_file = tmp_path / "secrets.env"
+        encrypted_file.write_text("(encrypted)")
+
+        provider = SopsCredentialProvider(encrypted_file)
+
+        with patch.object(
+            provider, "_decrypt", new_callable=AsyncMock,
+            side_effect=RuntimeError("sops --decrypt failed (exit 1): MAC mismatch"),
+        ):
+            spec = CredentialSpec(name="KEY")
+            with pytest.raises(RuntimeError, match="MAC mismatch"):
+                await provider.get(spec)
+
+    @pytest.mark.asyncio
+    async def test_caching(self, tmp_path):
+        """Decrypt is called only once — subsequent gets use cache."""
+        encrypted_file = tmp_path / "secrets.env"
+        encrypted_file.write_text("(encrypted)")
+
+        provider = SopsCredentialProvider(encrypted_file)
+        mock_decrypt = AsyncMock(return_value="KEY_A=val_a\nKEY_B=val_b\n")
+
+        with patch.object(provider, "_decrypt", mock_decrypt):
+            await provider.get(CredentialSpec(name="KEY_A"))
+            await provider.get(CredentialSpec(name="KEY_B"))
+            # _decrypt should be called exactly once
+            mock_decrypt.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reload_clears_cache(self, tmp_path):
+        encrypted_file = tmp_path / "secrets.env"
+        encrypted_file.write_text("(encrypted)")
+
+        provider = SopsCredentialProvider(encrypted_file)
+        mock_decrypt = AsyncMock(return_value="KEY=value\n")
+
+        with patch.object(provider, "_decrypt", mock_decrypt):
+            await provider.get(CredentialSpec(name="KEY"))
+            assert mock_decrypt.await_count == 1
+
+            await provider.reload()
+            await provider.get(CredentialSpec(name="KEY"))
+            assert mock_decrypt.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_resolve_manifest(self, tmp_path):
+        encrypted_file = tmp_path / "secrets.env"
+        encrypted_file.write_text("(encrypted)")
+
+        provider = SopsCredentialProvider(encrypted_file)
+        decrypted = "ANTHROPIC_API_KEY=sk-ant-sops\nGITHUB_TOKEN=ghp_sops\n"
+
+        with patch.object(provider, "_decrypt", new_callable=AsyncMock, return_value=decrypted):
+            manifest = CredentialManifest(credentials=[
+                CredentialSpec(name="ANTHROPIC_API_KEY", required=True),
+                CredentialSpec(name="GITHUB_TOKEN", required=True),
+                CredentialSpec(name="OPTIONAL", required=False),
+            ])
+            result = await provider.resolve(manifest)
+            assert result.ok
+            assert result.resolved["ANTHROPIC_API_KEY"].value == "sk-ant-sops"
+            assert result.resolved["ANTHROPIC_API_KEY"].source == "sops"
+
+    @pytest.mark.asyncio
+    async def test_in_chain_sops_before_dotenv(self, tmp_path):
+        """SOPS provider takes priority over dotenv in a chain."""
+        sops_file = tmp_path / "secrets.env"
+        sops_file.write_text("(encrypted)")
+
+        dotenv_file = tmp_path / ".env"
+        dotenv_file.write_text("ANTHROPIC_API_KEY=from-dotenv\nEXTRA_KEY=extra\n")
+
+        sops_provider = SopsCredentialProvider(sops_file)
+        dotenv_provider = DotEnvCredentialProvider(dotenv_file)
+
+        chain = ChainCredentialProvider([sops_provider, dotenv_provider, EnvCredentialProvider()])
+
+        decrypted = "ANTHROPIC_API_KEY=from-sops\n"
+        with patch.object(sops_provider, "_decrypt", new_callable=AsyncMock, return_value=decrypted):
+            manifest = CredentialManifest(credentials=[
+                CredentialSpec(name="ANTHROPIC_API_KEY", required=True),
+                CredentialSpec(name="EXTRA_KEY", required=True),
+            ])
+            result = await chain.resolve(manifest)
+            assert result.ok
+            # SOPS wins for ANTHROPIC_API_KEY
+            assert result.resolved["ANTHROPIC_API_KEY"].value == "from-sops"
+            assert result.resolved["ANTHROPIC_API_KEY"].source == "sops"
+            # EXTRA_KEY falls through to dotenv
+            assert result.resolved["EXTRA_KEY"].value == "extra"
+            assert result.resolved["EXTRA_KEY"].source == "dotenv"
