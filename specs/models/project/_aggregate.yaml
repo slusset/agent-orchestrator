@@ -23,16 +23,28 @@ value_objects:
   - AgentPreferences
   - EvalSnapshot
   - MemoryEntry
+  - Workflow (see workflow.model.yaml)
+  - WorkflowStep
+  - FailurePolicy
+  - MethodologyConfig
+  - RoleDefinition (see roles.model.yaml)
+  - CredentialSpec
 
 invariants:
   - A project must have a roadmap (plan/roadmap.yaml)
   - A project must have a repo root (the directory containing .pm/)
+  - A project must have a workflow definition (.pm/workflow.yaml)
   - Config values must have valid agent CLI types from the registry
   - Memory entries are append-only (can be superseded but not deleted)
   - Eval history is immutable once recorded
+  - Workflow steps must reference roles with registered capability profiles
+  - Workflow routing must not create unbounded cycles (max_retries required)
+  - All required credentials must be validated at boot before accepting work
 
 boundaries:
   - Roadmap is referenced, not embedded (managed by PlanManager)
   - IDD specs are referenced by path, not embedded
   - LangGraph checkpoints are a separate concern (workflow state)
   - Secrets/credentials are never stored in ProjectContext
+  - Workflow defines WHAT roles execute; agents define WHO fulfills them
+  - Methodology is advisory; it does not constrain the workflow pipeline

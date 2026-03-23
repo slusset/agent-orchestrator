@@ -1,0 +1,287 @@
+id: roles
+type: model
+entity: RoleDefinition
+aggregate: ProjectContext
+description: |
+  Role definitions for a project's agent pipeline. Roles decouple
+  the workflow from specific agent implementations — a "coding" role
+  can be fulfilled by Claude Code, Codex, Aider, or a custom agent.
+  A "uat" role can be a single validation agent or split into
+  unit-test, integration-test, and e2e-test sub-roles.
+
+  The framework provides standard roles with default capability
+  profiles. Projects can override these defaults, extend them,
+  or define entirely custom roles.
+
+  Roles live in .pm/config.yaml alongside other project config.
+  They are referenced by workflow steps and resolved to agent
+  capability profiles at dispatch time.
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+  journeys:
+    - specs/journeys/agent-execution-lifecycle.md
+
+# ---------------------------------------------------------------------------
+# Standard Roles (framework-provided defaults)
+# ---------------------------------------------------------------------------
+#
+# These are the out-of-the-box roles. Projects inherit them
+# automatically and can override any field.
+
+standard_roles:
+
+  coding:
+    description: |
+      Writes code to fulfill objectives. Owns the inner loop
+      (code generation via pluggable CLI) and participates in
+      the outer loop (git workspace, test execution, PR creation).
+
+      Does NOT own:
+      - Integration/E2E testing (UAT agent's domain)
+      - Deployment (DevOps agent's domain)
+      - PR review (PR agent's domain)
+
+      DOES own:
+      - Unit and component tests (fast, isolated, mocked)
+      - Self-review of generated code
+      - Git operations (branch, commit, push, PR creation)
+    default_bundle: CodingBundle
+    implicit_skills:
+      - git_operations
+      - code_generation
+      - test_writing
+      - code_review_self
+      - dependency_management
+    configurable_skills:
+      - bdd_specs
+      - tdd_workflow
+      - idd_workflow
+      - docker_build
+      - db_migrations
+    tools: [git, gh_cli, pytest, npm, uv]
+    testing_scope: |
+      Unit tests with mocked dependencies. Component tests for
+      single-service validation. The coding agent runs tests to
+      verify its own work, but does NOT set up external services
+      or manage test state beyond what's in the repo.
+    credentials: [ANTHROPIC_API_KEY, GITHUB_TOKEN]  # Or equivalent for CLI
+
+  pr:
+    description: |
+      Reviews pull requests for quality, correctness, and
+      compliance with project standards. Can approve, request
+      changes, or merge.
+
+      Checks:
+      - Code quality and readability
+      - Test coverage adequacy
+      - Acceptance criteria satisfaction
+      - Methodology compliance (if configured)
+      - No unintended side effects
+    default_bundle: PRBundle
+    implicit_skills:
+      - code_review
+      - test_analysis
+    configurable_skills:
+      - idd_compliance
+      - security_review
+    tools: [git, gh_cli]
+    credentials: [GITHUB_TOKEN]
+
+  uat:
+    description: |
+      Validates that delivered code works correctly in realistic
+      conditions. This is the most complex role because it must
+      manage test environments, state, and multi-layer testing.
+
+      Two modes:
+      1. Acceptance testing — "Does this meet requirements?"
+         Runs user-facing tests against acceptance criteria.
+      2. Integration testing — "Does this work with the system?"
+         Manages test infrastructure, seeds state, runs live tests.
+
+      The mode is set by the workflow step's test_scope config.
+
+      State management is the hard problem. The UAT agent must be
+      opinionated about:
+      - Isolation: each test run gets clean state
+      - Seeding: known data for deterministic scenarios
+      - Teardown: cleanup even on failure
+      - Parallelism: multiple runs don't collide
+
+    default_bundle: UATBundle
+    implicit_skills:
+      - test_execution
+      - test_environment_management
+    configurable_skills:
+      - e2e_testing
+      - performance_testing
+      - contract_testing
+      - accessibility_testing
+    tools: [pytest, playwright, docker, docker_compose, k6]
+    testing_scope: |
+      Integration tests (real services via docker-compose),
+      E2E tests (full user journeys via browser automation),
+      Contract tests (API compatibility),
+      Performance tests (load testing, regression).
+    credentials: [GITHUB_TOKEN, DB_URL, API_KEYS]
+    state_strategies:
+      isolated: |
+        Spin up containers per test run. Seed from fixtures.
+        Tear down after, even on failure. Most reliable but slowest.
+      shared: |
+        Use existing staging environment. Tests must be idempotent
+        and clean up after themselves. Faster but collision risk.
+      snapshot: |
+        Clone production data (sanitized), run tests against the
+        clone, discard. Most realistic but requires data pipeline.
+
+  devops:
+    description: |
+      Manages infrastructure and deployments. Executes deployment
+      recipes, runs health checks, handles rollbacks.
+
+      Does NOT replace CI — it replaces the human who configures,
+      troubleshoots, and evolves CI. The execution infrastructure
+      (GitHub Actions, ArgoCD, etc.) still runs pipelines. The
+      DevOps agent is the operator.
+
+      Responsibilities:
+      - Execute deployment recipes (deploy, rollback, scale)
+      - Run post-deploy health checks and smoke tests
+      - Manage CI/CD configuration (create/update pipeline YAML)
+      - Troubleshoot infrastructure issues
+      - Manage environment configuration
+    default_bundle: DevOpsBundle
+    implicit_skills:
+      - deployment_execution
+      - health_checking
+      - log_analysis
+    configurable_skills:
+      - ci_pipeline_management
+      - infrastructure_as_code
+      - container_orchestration
+      - monitoring_setup
+    tools: [docker, kubectl, gh_cli, terraform, aws_cli]
+    credentials: [GITHUB_TOKEN, DEPLOY_TOKEN, CLOUD_CREDENTIALS]
+
+# ---------------------------------------------------------------------------
+# Custom Role Extension
+# ---------------------------------------------------------------------------
+#
+# Projects can define custom roles in .pm/config.yaml:
+#
+#   roles:
+#     security-scan:
+#       description: "Run security scanning tools"
+#       default_bundle: TaskBundle
+#       implicit_skills: [security_analysis]
+#       tools: [snyk, semgrep, trivy]
+#       credentials: [SNYK_TOKEN]
+#
+#     perf-test:
+#       description: "Performance and load testing"
+#       default_bundle: UATBundle
+#       implicit_skills: [load_testing]
+#       tools: [k6, locust]
+#
+# Custom roles are registered in the agent capability profile
+# registry and become available for use in workflow steps.
+
+# ---------------------------------------------------------------------------
+# Role vs Agent vs CLI
+# ---------------------------------------------------------------------------
+#
+# These three concepts are related but distinct:
+#
+#   Role         "What needs to happen" (coding, review, testing, deploy)
+#   Agent        "Who does it" (a registered worker with a capability profile)
+#   CLI          "How they do it" (claude-code, codex, aider — coding role only)
+#
+# Example:
+#   Workflow step: { role: coding, config: { cli_type: claude-code } }
+#   Resolved to:   Agent "coding-agent-01" with ClaudeCodeCLI adapter
+#   Dispatched via: LOCAL (asyncio.create_task) or HTTP (POST /execute)
+#
+# The workflow speaks in roles. The dispatcher maps roles to agents.
+# The coding agent maps config to CLIs. Each layer has its own concern.
+
+# ---------------------------------------------------------------------------
+# Testing Responsibility Matrix
+# ---------------------------------------------------------------------------
+#
+# This is the key insight from the architecture discussion:
+#
+#   Test Type          Who Runs It    When              State Needs
+#   ─────────          ──────────     ────              ───────────
+#   Unit tests         Coding agent   During dev        None (mocked)
+#   Component tests    Coding agent   During dev        Minimal (in-proc)
+#   Integration tests  UAT agent      After PR merge    Docker services
+#   Contract tests     UAT agent      After PR merge    API stubs
+#   E2E tests          UAT agent      After integration Real environment
+#   Smoke tests        DevOps agent   After deploy      Production-like
+#   Perf tests         UAT agent      Scheduled/manual  Load gen infra
+#
+# The coding agent's testing is FAST and ISOLATED — it validates
+# its own work before submitting. The UAT agent's testing is
+# THOROUGH and REALISTIC — it validates the work in context.
+# The DevOps agent's testing is OPERATIONAL — it validates the
+# deployment is healthy.
+#
+# A project chooses which of these to include via its workflow.
+
+# ---------------------------------------------------------------------------
+# Relationship to LangGraph
+# ---------------------------------------------------------------------------
+#
+# Roles do NOT map 1:1 to graph nodes. The graph has a single
+# generic dispatch_step node. The role determines:
+#
+#   1. Which AgentCapabilityProfile to look up
+#   2. Which bundle type to create (CodingBundle, UATBundle, etc.)
+#   3. What config to merge into the bundle
+#   4. What credentials to resolve before dispatch
+#
+# This means adding a new role (e.g., security-scan) requires:
+#   - Define the role in .pm/config.yaml
+#   - Register an agent with matching capability profile
+#   - Add a workflow step that references it
+#
+# It does NOT require modifying the LangGraph graph topology.
+
+rules:
+  - id: role-has-capability-profile
+    description: |
+      Every role referenced in a workflow must have a corresponding
+      AgentCapabilityProfile in the registry. The PM validates this
+      at boot time.
+    enforced: domain
+
+  - id: role-credentials-in-manifest
+    description: |
+      All credentials listed in a role's credentials field must
+      exist in the project's credential manifest (.pm/credentials.yaml).
+    enforced: validation
+
+  - id: coding-agent-testing-boundary
+    description: |
+      The coding agent runs unit and component tests only.
+      It does NOT set up external services, manage test databases,
+      or run integration/E2E tests. That is the UAT agent's domain.
+    enforced: convention
+
+  - id: uat-state-isolation
+    description: |
+      UAT test runs must not share mutable state unless the
+      state_strategy is explicitly set to "shared". Default is
+      "isolated" — each run gets clean state.
+    enforced: convention
+
+  - id: devops-is-operator-not-infrastructure
+    description: |
+      The DevOps agent operates CI/CD and infrastructure. It does
+      not replace the pipeline runner (GitHub Actions, ArgoCD).
+      It replaces the human who configures and troubleshoots it.
+    enforced: convention

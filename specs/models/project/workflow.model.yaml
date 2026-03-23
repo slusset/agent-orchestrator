@@ -1,0 +1,494 @@
+id: workflow
+type: model
+entity: Workflow
+aggregate: ProjectContext
+description: |
+  A project-specific workflow definition that drives the PA's dispatch
+  choreography. This replaces the hard-coded agent pipeline
+  (coding → pr → uat → devops) with a configurable, data-driven
+  sequence that the graph's routing logic consults at runtime.
+
+  The workflow defines:
+  - What roles participate in delivery
+  - What order they execute in
+  - What happens on success or failure at each step
+  - What configuration each role receives
+
+  This is NOT the LangGraph graph topology. The graph remains generic:
+    plan_work → dispatch → wait → evaluate → route → dispatch → ...
+  The workflow tells the routing function WHERE to route next.
+
+  Different projects can define radically different pipelines:
+  - Full SDLC: coding → pr_review → uat → devops
+  - Lightweight:  coding → devops
+  - Validation-heavy: coding → uat(unit) → uat(integration) → uat(e2e) → devops
+  - Review-only: pr_review → uat
+
+sources:
+  stories:
+    - specs/stories/orchestration/pa-plans-and-dispatches.md
+    - specs/stories/orchestration/pa-evaluates-and-routes.md
+  journeys:
+    - specs/journeys/feature-request-lifecycle.md
+
+# ---------------------------------------------------------------------------
+# On-disk location
+# ---------------------------------------------------------------------------
+#
+# .pm/workflow.yaml
+#
+# One workflow per project. The PM loads this at boot and consults it
+# during route_after_evaluation to determine the next dispatch target.
+
+# ---------------------------------------------------------------------------
+# Core Structure
+# ---------------------------------------------------------------------------
+
+attributes:
+  name:
+    type: string
+    required: true
+    description: "Human-readable workflow name"
+    example: "Standard SDLC Pipeline"
+
+  description:
+    type: string
+    required: false
+
+  # The ordered pipeline of steps
+  steps:
+    type: list
+    items: WorkflowStep
+    required: true
+    constraints:
+      minItems: 1
+    description: |
+      Ordered list of steps in the delivery pipeline. Each step maps
+      to a role (agent type) with configuration and routing rules.
+
+  # Global failure handling
+  failure_policy:
+    type: FailurePolicy
+    required: true
+    description: "Default behavior when any step fails"
+
+  # Optional: methodology-specific configuration
+  methodology:
+    type: MethodologyConfig
+    required: false
+    description: |
+      Optional methodology settings. IDD, TDD, BDD, or none.
+      This is advisory — it affects what skills are included in
+      TaskBundles and what acceptance criteria the PA emphasizes.
+
+# ---------------------------------------------------------------------------
+# Value Objects
+# ---------------------------------------------------------------------------
+
+value_objects:
+
+  WorkflowStep:
+    description: |
+      A single step in the delivery pipeline. Maps a role to its
+      configuration and routing behavior.
+    fields:
+      id:
+        type: string
+        required: true
+        format: kebab-case
+        description: "Unique step identifier within this workflow"
+        examples: ["code", "review", "integration-test", "deploy-staging"]
+
+      role:
+        type: string
+        required: true
+        description: |
+          The agent role that handles this step. This maps to an
+          AgentCapabilityProfile in the registry. The orchestrator
+          uses this to look up HOW to dispatch (local, HTTP, queue)
+          and WHAT the agent can do.
+
+          Standard roles: coding, pr, uat, devops
+          Custom roles: validation, security-scan, perf-test, etc.
+        examples: ["coding", "pr", "uat", "devops"]
+
+      name:
+        type: string
+        required: false
+        description: "Human-readable step name for logging and status"
+        example: "Integration Testing"
+
+      # What this step does
+      config:
+        type: map
+        required: false
+        description: |
+          Role-specific configuration merged into the TaskBundle.
+          Each role interprets its own config keys.
+
+          Coding step config:
+            cli_type: claude-code
+            cli_args: { max_turns: 20 }
+            draft_pr: true
+            branch_strategy: feature-branch
+
+          UAT step config:
+            test_scope: integration    # unit | integration | e2e | contract | acceptance
+            state_strategy: isolated   # isolated | shared | snapshot
+            environment_spec:
+              services: [postgres, redis]
+              compose_file: docker-compose.test.yaml
+              seed_data: fixtures/integration/
+
+          DevOps step config:
+            action: deploy
+            target: staging
+            health_check: true
+            rollback_on_failure: true
+
+          PR step config:
+            action: review
+            auto_merge: false
+            required_checks: [tests, lint]
+
+      # Routing
+      on_success:
+        type: string
+        required: false
+        description: |
+          Step ID to route to on success. If omitted, routes to the
+          next step in the list. Use "__end__" to terminate.
+        examples: ["review", "deploy-staging", "__end__"]
+
+      on_failure:
+        type: FailureAction
+        required: false
+        description: |
+          What to do when this step fails. Overrides the workflow's
+          default failure_policy for this step.
+
+      # Conditions (future)
+      skip_if:
+        type: string
+        required: false
+        description: |
+          Condition expression for skipping this step.
+          Example: "no_test_changes" — skip UAT if only docs changed.
+          Not implemented in v1; steps always execute.
+
+      # Credentials this step needs
+      required_credentials:
+        type: list
+        items: string
+        required: false
+        description: |
+          Credential names from .pm/credentials.yaml that this step
+          requires. The PM validates these are available before dispatch.
+        examples: [["GITHUB_TOKEN"], ["ANTHROPIC_API_KEY", "GITHUB_TOKEN"]]
+
+  FailurePolicy:
+    description: "What to do when a step fails"
+    fields:
+      strategy:
+        type: enum
+        values: [retry, escalate, rollback, skip, abort]
+        required: true
+        description: |
+          - retry: Re-dispatch to the same role (up to max_retries)
+          - escalate: Notify stakeholder, pause workflow
+          - rollback: Dispatch to devops with rollback action
+          - skip: Log warning and continue to next step
+          - abort: Stop the workflow entirely
+      max_retries:
+        type: integer
+        default: 1
+        description: "How many times to retry before falling back"
+      fallback:
+        type: string
+        required: false
+        description: |
+          Step ID or strategy to use after retries exhausted.
+          Example: "escalate" after 2 retries.
+
+  FailureAction:
+    description: "Per-step failure override"
+    fields:
+      strategy:
+        type: enum
+        values: [retry, escalate, rollback, skip, abort, route_to]
+        required: true
+      max_retries:
+        type: integer
+        default: 1
+      route_to:
+        type: string
+        description: |
+          Step ID to route to on failure. Useful for "send back to
+          coding agent for fixes" pattern.
+        example: "code"
+
+  MethodologyConfig:
+    description: |
+      Optional methodology settings that influence how the PA
+      plans work and what skills are included in TaskBundles.
+      The orchestrator does not enforce any methodology — this is
+      advisory configuration that the plan_work node uses.
+    fields:
+      type:
+        type: enum
+        values: [idd, tdd, bdd, none]
+        default: none
+        description: |
+          - idd: Intent-Driven Development (full traceability chain)
+          - tdd: Test-Driven Development (tests first)
+          - bdd: Behavior-Driven Development (Gherkin specs)
+          - none: No prescribed methodology
+      specs_path:
+        type: path
+        default: "specs/"
+        description: "Where methodology artifacts live"
+      skills:
+        type: list
+        items: string
+        description: |
+          Skills to include in coding TaskBundles when this
+          methodology is active.
+        examples: [["idd_workflow", "bdd_specs"], ["tdd_workflow"]]
+      require_traceability:
+        type: boolean
+        default: false
+        description: |
+          If true, the PA will include traceability requirements
+          in acceptance criteria (test docstrings must reference
+          stories, features must trace to journeys, etc.)
+
+# ---------------------------------------------------------------------------
+# Example Workflows
+# ---------------------------------------------------------------------------
+
+examples:
+  - name: "Full SDLC (default)"
+    description: |
+      The standard pipeline: code it, review it, test it, deploy it.
+      This is what the current hard-coded graph does, expressed as data.
+    yaml: |
+      name: Full SDLC Pipeline
+      steps:
+        - id: code
+          role: coding
+          config:
+            cli_type: claude-code
+            draft_pr: true
+          on_failure:
+            strategy: retry
+            max_retries: 1
+            route_to: code
+
+        - id: review
+          role: pr
+          config:
+            action: review
+          on_failure:
+            strategy: route_to
+            route_to: code
+
+        - id: validate
+          role: uat
+          config:
+            test_scope: acceptance
+            state_strategy: isolated
+          required_credentials: [GITHUB_TOKEN]
+          on_failure:
+            strategy: route_to
+            route_to: code
+
+        - id: deploy
+          role: devops
+          config:
+            action: deploy
+            target: staging
+            rollback_on_failure: true
+          required_credentials: [GITHUB_TOKEN, DEPLOY_TOKEN]
+
+      failure_policy:
+        strategy: escalate
+        max_retries: 1
+
+      methodology:
+        type: idd
+        require_traceability: true
+        skills: [idd_workflow, bdd_specs]
+
+  - name: "Lightweight (no review, no UAT)"
+    description: |
+      For small projects or prototypes. Code and deploy.
+    yaml: |
+      name: Lightweight Pipeline
+      steps:
+        - id: code
+          role: coding
+          config:
+            cli_type: claude-code
+            draft_pr: false
+        - id: deploy
+          role: devops
+          config:
+            action: deploy
+            target: production
+
+      failure_policy:
+        strategy: abort
+
+  - name: "Validation-Heavy"
+    description: |
+      For projects with complex testing requirements.
+      Multiple UAT steps with different scopes.
+    yaml: |
+      name: Validation-Heavy Pipeline
+      steps:
+        - id: code
+          role: coding
+          config:
+            cli_type: claude-code
+
+        - id: review
+          role: pr
+          config:
+            action: review
+
+        - id: unit-test
+          role: uat
+          name: Unit & Component Tests
+          config:
+            test_scope: unit
+            state_strategy: isolated
+
+        - id: integration-test
+          role: uat
+          name: Integration Tests
+          config:
+            test_scope: integration
+            state_strategy: isolated
+            environment_spec:
+              services: [postgres, redis, rabbitmq]
+              compose_file: docker-compose.integration.yaml
+              seed_data: fixtures/integration/
+          required_credentials: [DB_URL, REDIS_URL]
+
+        - id: e2e-test
+          role: uat
+          name: End-to-End Tests
+          config:
+            test_scope: e2e
+            state_strategy: snapshot
+            environment_spec:
+              services: [full-stack]
+              compose_file: docker-compose.e2e.yaml
+          required_credentials: [DB_URL, API_KEY]
+          on_failure:
+            strategy: retry
+            max_retries: 2
+
+        - id: deploy-staging
+          role: devops
+          config:
+            action: deploy
+            target: staging
+
+      failure_policy:
+        strategy: escalate
+
+  - name: "Multi-CLI Eval"
+    description: |
+      Run the same work through multiple CLIs for comparison.
+      The eval framework does this already; this shows how a
+      workflow could express it for production use.
+    yaml: |
+      name: Multi-CLI Comparison
+      steps:
+        - id: code-claude
+          role: coding
+          config:
+            cli_type: claude-code
+        - id: code-codex
+          role: coding
+          config:
+            cli_type: codex
+        - id: compare
+          role: uat
+          config:
+            test_scope: acceptance
+            compare_branches: [code-claude, code-codex]
+
+      failure_policy:
+        strategy: escalate
+
+# ---------------------------------------------------------------------------
+# How the Graph Uses This
+# ---------------------------------------------------------------------------
+#
+# The workflow is loaded once at boot (or when project context changes).
+# The graph's route_after_evaluation function becomes:
+#
+#   def route_after_evaluation(state):
+#       workflow = state["context"]["workflow"]
+#       last_step = find_current_step(state, workflow)
+#
+#       if last_task_failed:
+#           action = last_step.on_failure or workflow.failure_policy
+#           return resolve_failure_action(action)
+#       else:
+#           next_step = last_step.on_success or workflow.next_step(last_step)
+#           if next_step == "__end__":
+#               return "__end__"
+#           return f"dispatch_{next_step.id}"
+#
+# The dispatch nodes become a single generic dispatch function:
+#
+#   def dispatch_step(state):
+#       workflow = state["context"]["workflow"]
+#       step = find_next_step(state, workflow)
+#       profile = registry.get(step.role)
+#       bundle = build_bundle(step, state, profile)
+#       return {"tasks": [TaskRecord(...)]}
+#
+# This means the graph itself shrinks to:
+#
+#   plan_work → dispatch_step → wait_for_agent → evaluate_result
+#                    ↑                                   │
+#                    └───────────────────────────────────-┘
+#
+# A single loop, driven by workflow data. The graph topology becomes
+# methodology-agnostic, stack-agnostic, and role-agnostic.
+
+rules:
+  - id: workflow-steps-unique-ids
+    description: "Each step must have a unique ID within the workflow"
+    enforced: validation
+
+  - id: workflow-routing-valid
+    description: |
+      on_success and on_failure.route_to must reference valid step IDs
+      or the special value "__end__"
+    enforced: validation
+
+  - id: workflow-no-cycles-without-retry
+    description: |
+      A routing cycle (e.g., code → review → code) must have a
+      max_retries limit to prevent infinite loops
+    enforced: validation
+
+  - id: workflow-credentials-validated-at-boot
+    description: |
+      All required_credentials across all steps are validated
+      at PM boot time. Missing credentials are reported before
+      any work starts.
+    enforced: domain
+
+  - id: methodology-is-advisory
+    description: |
+      The methodology config influences TaskBundle construction
+      but does not constrain the workflow pipeline. A project can
+      use IDD methodology with a lightweight pipeline, or no
+      methodology with a validation-heavy pipeline.
+    enforced: convention
