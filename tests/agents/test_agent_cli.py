@@ -442,6 +442,7 @@ class TestCLIRun:
         assert "timed out" in response.error
 
     @pytest.mark.asyncio
+    @pytest.mark.filterwarnings("ignore::RuntimeWarning")
     async def test_run_binary_not_found(self, basic_request):
         """Missing CLI binary returns helpful error."""
         cli = ClaudeCodeCLI()

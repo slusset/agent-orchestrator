@@ -24,4 +24,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-collect_ignore_glob = ["evals/tasks/*/seed-repo/*"]
+filterwarnings = [
+    "error::DeprecationWarning",
+]

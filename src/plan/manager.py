@@ -15,7 +15,7 @@ The manager enforces:
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -81,7 +81,7 @@ class PlanManager:
         if errors:
             raise PlanError(f"Cannot save — validation errors: {'; '.join(errors)}")
 
-        self._roadmap.updated_at = datetime.utcnow()
+        self._roadmap.updated_at = datetime.now(UTC)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "w") as f:
@@ -155,9 +155,9 @@ class PlanManager:
         milestone.status = new_status
 
         if new_status == MilestoneStatus.IN_PROGRESS and not milestone.started_at:
-            milestone.started_at = datetime.utcnow()
+            milestone.started_at = datetime.now(UTC)
         elif new_status == MilestoneStatus.COMPLETE:
-            milestone.completed_at = datetime.utcnow()
+            milestone.completed_at = datetime.now(UTC)
 
         self.save()
         logger.info(

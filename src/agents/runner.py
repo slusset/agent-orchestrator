@@ -203,9 +203,17 @@ def create_agent_app(
         app = create_agent_app("coding")
         uvicorn.run(app, port=8001)
     """
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        yield
+        await runner.shutdown()
+
     app = FastAPI(
         title=f"Agent Runner: {agent_type}",
         description=f"JSON-RPC-style service for the {agent_type} agent",
+        lifespan=lifespan,
     )
     runner = AgentRunner(agent_type, max_concurrent, transport)
 
@@ -249,10 +257,6 @@ def create_agent_app(
         """Cancel a running task."""
         cancelled = await runner.cancel(task_id)
         return CancelResponse(task_id=task_id, cancelled=cancelled)
-
-    @app.on_event("shutdown")
-    async def shutdown() -> None:
-        await runner.shutdown()
 
     return app
 

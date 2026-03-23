@@ -60,6 +60,8 @@ class GitResult:
 class TestResults:
     """Structured test execution results."""
 
+    __test__ = False  # Prevent pytest from collecting this dataclass
+
     passed: bool
     count: int
     failures: list[str] = field(default_factory=list)

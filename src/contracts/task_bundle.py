@@ -8,7 +8,7 @@ by the StatusReporter abstraction.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 from uuid import uuid4
@@ -43,7 +43,7 @@ class StatusUpdate(BaseModel):
     message: str = ""
     progress_pct: int | None = Field(None, ge=0, le=100)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class TaskResult(BaseModel):
@@ -55,7 +55,7 @@ class TaskResult(BaseModel):
     artifacts: list[str] = Field(default_factory=list)  # PR URLs, file paths, etc.
     errors: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    completed_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class TaskBundle(BaseModel):
@@ -92,6 +92,6 @@ class TaskBundle(BaseModel):
     timeout_minutes: int = Field(default=60, description="Max time before PA escalates")
 
     # Metadata
-    dispatched_at: datetime = Field(default_factory=datetime.utcnow)
+    dispatched_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     dispatched_by: str = "primary_agent"
     metadata: dict[str, Any] = Field(default_factory=dict)
