@@ -45,6 +45,7 @@ from src.contracts.credentials import (
 from src.contracts.task_bundle import TaskBundle
 from src.agents.coding_agent import CodingAgent
 from src.agents.agent_cli import AgentCLI, CLIRequest, CLIResponse, create_cli
+from src.orchestrator.dispatcher import AgentDispatcher
 from src.orchestrator.graph import _resolved_env_for_role
 from src.orchestrator.server import OrchestratorServer
 
@@ -429,6 +430,79 @@ class TestCodingAgentCredentialInjection:
         assert agent.cli.extra_env["ANTHROPIC_API_KEY"] == "sk-new"
         # resolved_env takes precedence via dict merge order
         assert agent.cli.extra_env["EXISTING_VAR"] == "overwrite-me"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4b: Serialization gap — credentials survive TaskRecord round-trip
+# ---------------------------------------------------------------------------
+
+
+class TestCredentialSurvivesSerialization:
+    """
+    Regression: dispatch_coding serializes bundle via model_dump(mode='json')
+    which strips resolved_env (exclude=True). The server re-injects credentials
+    from its cache before the dispatcher creates the agent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_server_reinjects_credentials_before_dispatch(
+        self, manifest_yaml, static_provider
+    ):
+        """
+        Scenario: Credentials survive the TaskRecord serialization gap.
+
+        1. dispatch_coding creates bundle with resolved_env
+        2. bundle.model_dump(mode='json') strips resolved_env
+        3. TaskRecord stores the stripped dict
+        4. Server._dispatch_pending_tasks re-injects from cache
+        5. Dispatcher reads _resolved_env and restores on the bundle
+        """
+        server = OrchestratorServer(
+            transport="log",
+            credential_provider=static_provider,
+            manifest_path=manifest_yaml,
+        )
+        await server.boot()
+
+        # Simulate what dispatch_coding does: create + serialize
+        bundle = CodingBundle(
+            objective="Test serialization gap",
+            callback_url="http://localhost:8000/callback",
+            repo_url="git@github.com:test/repo.git",
+            resolved_env=server.get_resolved_env("coding"),
+        )
+        serialized = bundle.model_dump(mode="json")
+        assert "resolved_env" not in serialized  # Confirm it's stripped
+
+        # Simulate TaskRecord as stored in graph state
+        task_record = {
+            "task_id": bundle.task_id,
+            "agent_type": "coding",
+            "bundle": serialized,
+            "status": "dispatched",
+            "last_update": None,
+            "result": None,
+            "pr_url": None,
+        }
+
+        # Server re-injects credentials (as _dispatch_pending_tasks does)
+        role = task_record["agent_type"]
+        resolved = server.get_resolved_env(role)
+        task_record["_resolved_env"] = resolved
+
+        # Dispatcher deserializes and re-injects
+        deserialized = CodingBundle.model_validate(task_record["bundle"])
+        assert deserialized.resolved_env == {}  # Still empty after deserialization
+
+        # Apply the re-injection (as dispatcher._dispatch_local does)
+        deserialized.resolved_env = task_record["_resolved_env"]
+
+        # Now create agent — credentials should flow to CLI
+        agent = CodingAgent(bundle=deserialized)
+        assert agent.cli.extra_env["ANTHROPIC_API_KEY"] == "sk-ant-test-1234"
+        assert agent.cli.extra_env["GITHUB_TOKEN"] == "ghp-test-5678"
+        assert agent.cli.extra_env["SHARED_SECRET"] == "shared-abc"
+        assert "JIRA_TOKEN" not in agent.cli.extra_env
 
 
 # ---------------------------------------------------------------------------

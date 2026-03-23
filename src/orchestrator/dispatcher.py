@@ -124,6 +124,13 @@ class AgentDispatcher:
         bundle_class, agent_class = LOCAL_AGENT_REGISTRY[agent_type]
         bundle = bundle_class.model_validate(task_record["bundle"])
 
+        # Re-inject resolved credentials. The bundle's resolved_env is
+        # excluded from serialization (checkpoint safety), so the server
+        # re-attaches them as _resolved_env on the task record before dispatch.
+        resolved_env = task_record.get("_resolved_env")
+        if resolved_env:
+            bundle.resolved_env = resolved_env
+
         reporter = self._make_reporter(bundle)
         agent = agent_class(bundle=bundle, reporter=reporter)
 

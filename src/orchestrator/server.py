@@ -222,6 +222,10 @@ class OrchestratorServer:
     ) -> None:
         """
         Check state for newly dispatched tasks and launch agents for them.
+
+        Re-injects resolved credentials into the task record before dispatch.
+        Credentials are stripped during bundle serialization (exclude=True for
+        checkpoint safety) so we restore them here from the server's cache.
         """
         tasks = state.get("tasks", [])
         for task in tasks:
@@ -229,6 +233,15 @@ class OrchestratorServer:
                 task_id = task["task_id"]
                 if not self.dispatcher.is_running(task_id):
                     self._task_to_thread[task_id] = thread_id
+                    # Re-inject credentials stripped during serialization.
+                    # The graph stores bundle.model_dump(mode="json") which
+                    # excludes resolved_env. We restore from the server's
+                    # cached resolution so the dispatcher can pass them
+                    # to locally-invoked agents.
+                    role = task.get("agent_type", "")
+                    resolved = self.get_resolved_env(role)
+                    if resolved:
+                        task["_resolved_env"] = resolved
                     await self.dispatcher.dispatch(task)
 
     def get_thread_for_task(self, task_id: str) -> str | None:
