@@ -3,8 +3,9 @@ Unit tests for the credential provider contract.
 
 Traceability:
   Journey: specs/journeys/feature-request-lifecycle.md
-  Story: specs/stories/orchestration/pa-plans-and-dispatches.md
-  Domain Model: specs/models/project/project-store.model.yaml
+  Story: specs/stories/orchestration/pa-resolves-credentials.md
+  Feature: specs/features/orchestration/pa-resolves-credentials.feature
+  Domain Model: specs/models/project/credentials.model.yaml
 """
 
 import json

@@ -67,6 +67,20 @@ milestones:
     issue_refs:
     - '#3'
     depends_on: []
+  - id: credential-provider
+    name: Pluggable credential resolution with manifest
+    description: CredentialProvider abstraction with env/dotenv/sops backends, credential
+      manifest in .pm/credentials.yaml, boot-time validation, per-role filtering,
+      and resolved_env injection into TaskBundles.
+    status: complete
+    spec_refs:
+    - specs/models/project/credentials.model.yaml
+    - specs/stories/orchestration/pa-resolves-credentials.md
+    - specs/features/orchestration/pa-resolves-credentials.feature
+    issue_refs:
+    - '#7'
+    depends_on:
+    - task-bundle-contracts
   target_date: null
   started_at: '2026-03-21T00:00:00'
   completed_at: null
@@ -443,4 +457,4 @@ milestones:
   - Role definitions decouple what/who/how for agent dispatch
   - Testing responsibility matrix formalizes coding vs UAT vs DevOps boundaries
 created_at: '2026-03-22T14:33:25.360602'
-updated_at: '2026-03-23T12:55:30.544886'
+updated_at: '2026-03-23T18:19:00.031111Z'
