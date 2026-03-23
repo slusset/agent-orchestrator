@@ -324,5 +324,123 @@ milestones:
   - Health endpoint shows running tasks during execution
   - Full flow observable via structured logs (no black boxes)
   - Can run the demo with a single command (e.g., uv run python -m demo)
+- id: m3b-eval-framework
+  name: Eval Framework & Pluggable CLI Adapters
+  description: Pluggable agent CLI adapter pattern (Claude Code, Codex, Gemini, Aider,
+    GenericCLI), seed-repo eval framework with 4 benchmark tasks, and project command
+    tooling (justfile). Enables testing agent CLIs against graded tasks without the
+    full orchestrator loop.
+  status: complete
+  depends_on:
+  - m3-coding-agent
+  capabilities:
+  - id: pluggable-cli-adapter
+    name: Pluggable agent CLI adapter pattern
+    description: Abstract AgentCLI base with concrete adapters for Claude Code, Codex,
+      Gemini, Aider, and GenericCLI. Registry + factory pattern. CodingAgent delegates
+      code generation to whichever CLI is configured.
+    status: complete
+    spec_refs:
+    - src/agents/agent_cli.py
+    - tests/agents/test_agent_cli.py
+    issue_refs: []
+    depends_on: []
+  - id: seed-repo-eval-tasks
+    name: Seed repo eval tasks with grading rubrics
+    description: 'Four purpose-built eval tasks: add-hello-endpoint (easy), add-fibonacci-function
+      (medium), fix-import-error (easy), add-todo-crud (medium). Each has a seed repo
+      with failing tests that serve as the grading rubric. SWE-bench pattern scaled
+      to controlled tasks.'
+    status: complete
+    spec_refs:
+    - evals/tasks/add-hello-endpoint/task.yaml
+    - evals/tasks/add-fibonacci-function/task.yaml
+    - evals/tasks/fix-import-error/task.yaml
+    - evals/tasks/add-todo-crud/task.yaml
+    issue_refs: []
+    depends_on: []
+  - id: eval-runner
+    name: Eval runner with CLI dispatch and test grading
+    description: 'EvalRunner copies seed repo, verifies baseline fails, invokes CLI
+      agent, grades by running tests. EvalResult and EvalSuiteResult for aggregation.
+      CLI entrypoint: python -m evals.'
+    status: complete
+    spec_refs:
+    - evals/runner.py
+    - evals/task.py
+    - evals/run.py
+    - tests/evals/test_eval_framework.py
+    issue_refs: []
+    depends_on:
+    - pluggable-cli-adapter
+    - seed-repo-eval-tasks
+  - id: project-commands
+    name: Justfile project command targets
+    description: just targets for tests (per-layer, pattern, coverage), evals (run,
+      dry-run, single task, save, specific CLI), validation (plan check, strict, specs
+      inventory), and development (install, format, lint, demo, graph check, pre-push).
+    status: complete
+    spec_refs:
+    - justfile
+    issue_refs: []
+    depends_on: []
+  target_date: null
+  started_at: null
+  completed_at: null
+  success_criteria:
+  - Pluggable CLI adapter pattern with 5+ adapters and registry
+  - 4 eval tasks with seed repos whose tests fail at baseline
+  - Eval runner grades agent work by running tests (4/4 passing with Claude Code)
+  - just targets for all common project operations
+- id: m3c-project-model
+  name: ProjectContext Model & Customizable Workflows
+  description: Domain model for project continuity (three-layer state model), configurable
+    delivery pipelines, and extensible role definitions. Specs that enable the orchestrator
+    to be customized per project without code changes.
+  status: complete
+  depends_on:
+  - m3-coding-agent
+  capabilities:
+  - id: project-context-model
+    name: ProjectContext domain model and lifecycle
+    description: 'Three-layer state model: Layer 1 (project knowledge in repo), Layer
+      2 (LangGraph checkpoints in DB), Layer 3 (runtime ephemeral). Boot sequence,
+      recovery patterns, activation triggers. .pm/ directory convention.'
+    status: complete
+    spec_refs:
+    - specs/models/project/_aggregate.yaml
+    - specs/models/project/project-context.model.yaml
+    - specs/models/project/project-context.lifecycle.yaml
+    issue_refs:
+    - '#5'
+    depends_on: []
+  - id: workflow-definition
+    name: Data-driven workflow pipeline definition
+    description: 'Configurable delivery pipeline that replaces hard-coded agent routing.
+      Steps map roles to config, routing, and failure handling. Examples: full SDLC,
+      lightweight, validation-heavy. Graph becomes a single generic dispatch loop.'
+    status: complete
+    spec_refs:
+    - specs/models/project/workflow.model.yaml
+    issue_refs: []
+    depends_on: []
+  - id: role-definitions
+    name: Extensible role definitions with testing responsibility matrix
+    description: Standard roles (coding, pr, uat, devops) with testing boundary formalization.
+      Projects can override defaults or define custom roles. Role vs Agent vs CLI
+      distinction. UAT state management strategies (isolated, shared, snapshot).
+    status: complete
+    spec_refs:
+    - specs/models/project/roles.model.yaml
+    issue_refs: []
+    depends_on: []
+  target_date: null
+  started_at: null
+  completed_at: null
+  success_criteria:
+  - ProjectContext model defines the PM continuity boundary
+  - Workflow definition enables project-specific pipelines without graph changes
+  - Role definitions decouple what/who/how for agent dispatch
+  - Testing responsibility matrix formalizes coding vs UAT vs DevOps boundaries
 created_at: '2026-03-22T14:33:25.360602'
-updated_at: '2026-03-22T23:23:00.663934'
+updated_at: '2026-03-23T12:55:30.544886'
