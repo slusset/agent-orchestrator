@@ -83,16 +83,27 @@ class OrchestratorServer:
         self._resolved: ResolutionResult | None = None
         self._manifest_path = Path(manifest_path) if manifest_path else Path(DEFAULT_MANIFEST_PATH)
 
+        # Agent rules — project-level instructions injected into every bundle
+        self._agent_rules: str = ""
+
         # Track which thread_id each task_id belongs to
         self._task_to_thread: dict[str, str] = {}
 
     async def boot(self) -> ResolutionResult | None:
         """
-        Boot-time initialization: load credential manifest and validate.
+        Boot-time initialization: load credentials and agent rules.
 
         Call this after construction, before accepting work.
         Returns the ResolutionResult, or None if no manifest found.
         """
+        # Load agent rules (project-level instructions for all agents)
+        rules_path = self._manifest_path.parent / "agent-rules.md"
+        if rules_path.exists():
+            self._agent_rules = rules_path.read_text()
+            logger.info("Loaded agent rules from %s", rules_path)
+        else:
+            logger.debug("No agent rules at %s", rules_path)
+
         try:
             self._manifest = load_credential_manifest(self._manifest_path)
         except FileNotFoundError:
@@ -160,10 +171,22 @@ class OrchestratorServer:
                 role_envs[role] = self.get_resolved_env(role)
             effective_context["_resolved_credentials"] = role_envs
 
+        # Inject agent rules into story context so dispatch nodes include
+        # them in the bundle. Agents receive these as part of the context
+        # field — project-level hygiene rules, code style, testing conventions.
+        effective_story = dict(story or {})
+        if self._agent_rules:
+            existing_context = effective_story.get("context", "")
+            effective_story["context"] = (
+                f"{existing_context}\n\n{self._agent_rules}".strip()
+                if existing_context
+                else self._agent_rules
+            )
+
         initial_state: dict[str, Any] = {
             "messages": [{"role": "user", "content": message}],
             "tasks": [],
-            "current_story": story or {},
+            "current_story": effective_story,
             "context": effective_context,
         }
 

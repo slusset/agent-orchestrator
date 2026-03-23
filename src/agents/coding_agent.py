@@ -335,7 +335,7 @@ class CodingAgent(BaseAgent):
         files_changed: list[str],
     ) -> str:
         """Push branch and create pull request. Returns PR URL."""
-        title = f"{self.coding_bundle.pr_title_prefix} {self.coding_bundle.objective}".strip()
+        title = self._build_pr_title()
 
         # Build PR body
         body = self._build_pr_body(files_changed)
@@ -358,6 +358,31 @@ class CodingAgent(BaseAgent):
         )
 
         return pr_info.url
+
+    def _build_pr_title(self) -> str:
+        """Build a concise PR title from the objective.
+
+        Takes the first sentence (or first 65 chars) of the objective
+        and prepends the optional pr_title_prefix. Avoids dumping the
+        full multi-sentence prompt as the PR title.
+        """
+        objective = self.coding_bundle.objective
+
+        # Take first sentence
+        for delim in (". ", ".\n", "\n"):
+            if delim in objective:
+                objective = objective[:objective.index(delim)]
+                break
+
+        # Truncate to reasonable PR title length
+        max_len = 65
+        if len(objective) > max_len:
+            objective = objective[:max_len].rsplit(" ", 1)[0] + "..."
+
+        prefix = self.coding_bundle.pr_title_prefix
+        if prefix:
+            return f"{prefix} {objective}".strip()
+        return objective.strip()
 
     def _build_pr_body(self, files_changed: list[str]) -> str:
         """Build the PR body from template or defaults."""
